@@ -10,7 +10,9 @@ from minimal_agent.errors import (
     ContextWindowExceededError,
 )
 from minimal_agent.models import (
+    CompressionStatus,
     ConversationMessage,
+    ContextBuildResult,
     MessageRole,
     SessionState,
     SummaryRequest,
@@ -61,8 +63,8 @@ class ContextManager:
         system_prompt: str,
         tools: list[ToolDefinition],
         max_output_tokens: int,
-    ) -> list[ConversationMessage]:
-        """Return bounded messages and update only successful summary metadata."""
+    ) -> ContextBuildResult:
+        """Return bounded messages plus safe compression diagnostics."""
         unsummarized = self._messages_after_boundary(session)
         turns = self._split_turns(unsummarized)
         current_turns = [turn for turn in turns if not self._is_completed(turn)]
@@ -83,9 +85,15 @@ class ContextManager:
             max_output_tokens=max_output_tokens,
         )
 
+        compression_attempted = False
+        compression_status = CompressionStatus.NOT_NEEDED
+        summary_updated = False
+        failure_kind: str | None = None
+
         if estimated_tokens >= self._compression_trigger:
             candidates = self._summary_candidates(turns)
             if candidates:
+                compression_attempted = True
                 candidate_messages = self._flatten(candidates)
                 try:
                     new_summary = await self._llm.summarize(
@@ -96,24 +104,43 @@ class ContextManager:
                         )
                     )
                     if not new_summary.strip():
+                        failure_kind = "empty_summary"
                         raise ContextCompressionError(
                             "summary response must contain visible text"
                         )
                 except Exception:
-                    pass
+                    compression_status = CompressionStatus.FALLBACK
+                    if failure_kind is None:
+                        failure_kind = "summary_exception"
                 else:
+                    compression_status = CompressionStatus.SUCCEEDED
+                    summary_updated = True
                     summary = new_summary.strip()
                     session.summary = summary
                     session.summary_up_to_message_id = candidate_messages[-1].id
                     session.updated_at = max(utc_now(), session.created_at)
                     turns = turns[len(candidates) :]
 
-        return self._fit_to_limit(
+        messages = self._fit_to_limit(
             system_prompt=system_prompt,
             tools=tools,
             summary=summary,
             turns=turns,
             max_output_tokens=max_output_tokens,
+        )
+        final_estimate = self.estimate_request_tokens(
+            system_prompt=system_prompt,
+            tools=tools,
+            messages=messages,
+            max_output_tokens=max_output_tokens,
+        )
+        return ContextBuildResult(
+            messages=messages,
+            estimated_tokens=final_estimate,
+            compression_attempted=compression_attempted,
+            compression_status=compression_status,
+            summary_updated=summary_updated,
+            failure_kind=failure_kind,
         )
 
     @classmethod

@@ -323,3 +323,45 @@ position.
 Snapshot tests prove user, tool-batch, final, and max-step ordering. End-to-end
 tests recreate the SQLite store and recover complete history, Todo state, summary
 metadata, and the raw-history summary boundary while preserving session isolation.
+
+## 2026-07-24 - Phase 6A: correlate traces without leaking LLM payloads
+
+### Problem
+
+Runtime boundaries contained the required execution evidence, but logging full LLM
+requests would expose system prompts and conversation text, while injecting a sink
+into ContextManager would mix context policy with observability orchestration.
+
+### Analysis
+
+Runtime already owns turn IDs, loop steps, LLM calls, tool dispatch, checkpoints,
+and terminal outcomes. ContextManager alone knows whether compression succeeded or
+fell back. Trace failures must not become a new reason for an Agent run to fail.
+
+### Options
+
+1. Log raw provider requests and responses from the SDK adapter.
+2. Inject TraceSink into Runtime, ContextManager, ToolRegistry, and persistence.
+3. Let ContextManager return a small safe report and let Runtime emit sanitized,
+   correlated events through one optional best-effort sink.
+
+### Decision
+
+Use option 3. LLM request traces store only structural metadata. Tool arguments and
+results remain available in development traces as required, while hidden reasoning,
+raw provider data, headers, and credentials have no TraceEvent fields. Sink errors
+are swallowed by one small Runtime helper without retry.
+
+### AI Assistance
+
+AI defined the single-event schema, mapped event order to existing Runtime control
+boundaries, separated compression diagnostics from trace correlation, and designed
+privacy and failure-injection tests.
+
+### Verification
+
+Tests assert direct/tool/multi-round order, loop-step and turn correlation, run/LLM/
+tool latency, max-step completion, tool failures, checkpoint and protocol errors,
+compression success/fallback, JSON logging, and best-effort sink failure. Fixtures
+prove system API keys, full user messages, and private reasoning markers do not
+appear in serialized traces.

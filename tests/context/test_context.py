@@ -5,6 +5,8 @@ from minimal_agent.context import ContextManager
 from minimal_agent.errors import ContextWindowExceededError
 from minimal_agent.models import (
     ConversationMessage,
+    ContextBuildResult,
+    CompressionStatus,
     LLMResponseType,
     LLMResult,
     MessageRole,
@@ -105,12 +107,13 @@ async def build(
     tools: list[ToolDefinition] | None = None,
     max_output_tokens: int = OUTPUT_RESERVE,
 ) -> list[ConversationMessage]:
-    return await context_manager.build(
+    result = await context_manager.build(
         state,
         system_prompt=system_prompt,
         tools=tools or [],
         max_output_tokens=max_output_tokens,
     )
+    return result.messages
 
 
 def contents(messages: Sequence[ConversationMessage]) -> list[str | None]:
@@ -438,10 +441,16 @@ class CountingContextManager:
         system_prompt: str,
         tools: list[ToolDefinition],
         max_output_tokens: int,
-    ) -> list[ConversationMessage]:
+    ) -> ContextBuildResult:
         del system_prompt, tools, max_output_tokens
         self.calls += 1
-        return list(session.history)
+        return ContextBuildResult(
+            messages=list(session.history),
+            estimated_tokens=0,
+            compression_attempted=False,
+            compression_status=CompressionStatus.NOT_NEEDED,
+            summary_updated=False,
+        )
 
 
 @pytest.mark.asyncio

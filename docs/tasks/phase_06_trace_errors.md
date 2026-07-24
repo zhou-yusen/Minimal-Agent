@@ -14,15 +14,29 @@ Make every agent run diagnosable and ensure boundary failures have predictable b
 - Define and map `SessionNotFoundError`, `LLMTimeoutError`, `LLMProtocolError`, `SessionStoreError`, and context errors.
 - Configure provider timeout and at most one simple retry only if adapter evidence shows a transient timeout is safe; do not add a retry framework.
 
+## Phase 6A observability completed
+
+- `AgentRuntime` optionally emits correlated `TraceEvent` records for run, context
+  compression, LLM, tool, error, and finish boundaries.
+- LLM request events contain only structural metadata: counts, roles, tool names,
+  output limit, and continuation presence. They exclude prompt and message text.
+- `ContextManager.build()` returns a provider-neutral `ContextBuildResult` so the
+  runtime can correlate successful or fallback compression without injecting a
+  trace dependency into context selection.
+- Trace emission is best-effort. Sink exceptions are ignored without retry and
+  cannot alter checkpoints, LLM calls, tools, or the returned run result.
+- `InMemoryTraceSink` supports deterministic tests; `JsonLoggingTraceSink` writes
+  one compact JSON event per stdlib logging record.
+
 ## Deferred from Phase 5C
 
 - Resolve the failure-turn recovery question for a durably checkpointed user
   message when context construction, the LLM, or the provider fails before the
   next checkpoint. Do not delete the user message, synthesize an assistant
   response, or retry until Phase 6 defines and tests the recovery contract.
-- Make `ContextManager` compression failures observable through trace events.
-  Its current best-effort `except Exception: pass` behavior must remain unchanged
-  until tracing is introduced.
+
+Phase 6A makes compression fallback observable. Failure-turn recovery, provider
+exception normalization, and any evidence-based retry decision remain Phase 6B.
 
 ## Key trade-offs
 

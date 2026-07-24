@@ -104,6 +104,25 @@ class LLMResponseType(StrEnum):
     TOOL_CALLS = "tool_calls"
 
 
+class CompressionStatus(StrEnum):
+    NOT_NEEDED = "not_needed"
+    SUCCEEDED = "succeeded"
+    FALLBACK = "fallback"
+
+
+class ContextBuildResult(BaseModel):
+    """Provider-neutral context output plus safe compression diagnostics."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    messages: list[ConversationMessage]
+    estimated_tokens: int = Field(ge=0)
+    compression_attempted: bool
+    compression_status: CompressionStatus
+    summary_updated: bool
+    failure_kind: str | None = None
+
+
 class TokenUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -214,3 +233,53 @@ class AgentRunResult(BaseModel):
     status: AgentRunStatus
     final_answer: str = Field(min_length=1)
     loop_steps: int = Field(ge=0)
+
+
+class TraceEventType(StrEnum):
+    RUN_START = "run_start"
+    COMPRESSION = "compression"
+    LLM_REQUEST = "llm_request"
+    LLM_RESPONSE = "llm_response"
+    TOOL_START = "tool_start"
+    TOOL_RESULT = "tool_result"
+    ERROR = "error"
+    RUN_FINISH = "run_finish"
+
+
+class TraceEvent(BaseModel):
+    """One correlated, JSON-serializable development trace event."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: TraceEventType
+    timestamp: datetime = Field(default_factory=utc_now)
+    user_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    turn_id: str = Field(min_length=1)
+    loop_step: int | None = Field(default=None, ge=1)
+    latency_ms: float | None = Field(default=None, ge=0)
+    llm_response_type: LLMResponseType | None = None
+    reasoning_present: bool | None = None
+    continuation_present: bool | None = None
+    provider_response_id_present: bool | None = None
+    message_count: int | None = Field(default=None, ge=0)
+    message_roles: list[MessageRole] | None = None
+    tool_names: list[str] | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    tool_call_count: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    tool_args: Any | None = None
+    tool_ok: bool | None = None
+    tool_result: Any | None = None
+    error: dict[str, Any] | None = None
+    estimated_tokens: int | None = Field(default=None, ge=0)
+    compression_attempted: bool | None = None
+    compression_status: CompressionStatus | None = None
+    summary_updated: bool | None = None
+    failure_kind: str | None = None
+    final_answer: str | None = None
+    status: AgentRunStatus | None = None
+    loop_steps: int | None = Field(default=None, ge=0)

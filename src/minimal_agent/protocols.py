@@ -11,6 +11,7 @@ from minimal_agent.models import (
     LLMResult,
     SessionState,
     SummaryRequest,
+    TraceEvent,
     ToolContext,
 )
 
@@ -35,6 +36,12 @@ class SessionStore(Protocol):
     async def save(self, state: SessionState) -> None: ...
 
     async def delete(self, user_id: str, session_id: str) -> None: ...
+
+
+class TraceSink(Protocol):
+    """Replaceable destination for structured runtime diagnostics."""
+
+    async def emit(self, event: TraceEvent) -> None: ...
 
 
 class Tool(Protocol):

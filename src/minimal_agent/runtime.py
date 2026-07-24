@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
 from minimal_agent.context import ContextManager
@@ -18,9 +20,11 @@ from minimal_agent.models import (
     SessionState,
     ToolContext,
     ToolResult,
+    TraceEvent,
+    TraceEventType,
     utc_now,
 )
-from minimal_agent.protocols import LLMClient
+from minimal_agent.protocols import LLMClient, TraceSink
 from minimal_agent.tools.registry import ToolRegistry
 
 Checkpoint = Callable[[SessionState], Awaitable[None]]
@@ -42,6 +46,7 @@ class AgentRuntime:
         system_prompt: str,
         max_steps: int,
         max_output_tokens: int,
+        trace_sink: TraceSink | None = None,
     ) -> None:
         if not system_prompt.strip():
             raise ValueError("system_prompt must not be empty")
@@ -56,6 +61,7 @@ class AgentRuntime:
         self._system_prompt = system_prompt
         self._max_steps = max_steps
         self._max_output_tokens = max_output_tokens
+        self._trace_sink = trace_sink
 
     async def run(
         self,
@@ -65,88 +71,223 @@ class AgentRuntime:
         checkpoint: Checkpoint | None = None,
     ) -> AgentRunResult:
         """Mutate ``session`` with one bounded user turn and return its outcome."""
+        run_started = perf_counter()
         turn_id = str(uuid4())
-        self._append(
-            session,
-            ConversationMessage(role=MessageRole.USER, content=user_message),
-        )
-        await self._checkpoint(session, checkpoint)
-
-        tool_definitions = self._tools.definitions()
-        request_messages = await self._context_manager.build(
-            session,
-            system_prompt=self._system_prompt,
-            tools=tool_definitions,
-            max_output_tokens=self._max_output_tokens,
-        )
-        continuation_id: str | None = None
-        tool_context = ToolContext(
-            user_id=session.user_id,
-            session_id=session.session_id,
-            tool_state=session.tool_state,
+        loop_step: int | None = None
+        stage = "run_start"
+        await self._emit_trace(
+            TraceEvent(
+                event_type=TraceEventType.RUN_START,
+                user_id=session.user_id,
+                session_id=session.session_id,
+                turn_id=turn_id,
+            )
         )
 
-        for loop_step in range(1, self._max_steps + 1):
-            result = await self._llm.complete(
-                LLMRequest(
+        try:
+            self._append(
+                session,
+                ConversationMessage(role=MessageRole.USER, content=user_message),
+            )
+            stage = "user_checkpoint"
+            await self._checkpoint(session, checkpoint)
+
+            tool_definitions = self._tools.definitions()
+            stage = "context_build"
+            context_result = await self._context_manager.build(
+                session,
+                system_prompt=self._system_prompt,
+                tools=tool_definitions,
+                max_output_tokens=self._max_output_tokens,
+            )
+            if context_result.compression_attempted:
+                await self._emit_trace(
+                    TraceEvent(
+                        event_type=TraceEventType.COMPRESSION,
+                        user_id=session.user_id,
+                        session_id=session.session_id,
+                        turn_id=turn_id,
+                        estimated_tokens=context_result.estimated_tokens,
+                        compression_attempted=True,
+                        compression_status=context_result.compression_status,
+                        summary_updated=context_result.summary_updated,
+                        failure_kind=context_result.failure_kind,
+                    )
+                )
+            request_messages = context_result.messages
+            continuation_id: str | None = None
+            tool_context = ToolContext(
+                user_id=session.user_id,
+                session_id=session.session_id,
+                tool_state=session.tool_state,
+            )
+
+            for loop_step in range(1, self._max_steps + 1):
+                request = LLMRequest(
                     system_prompt=self._system_prompt,
                     messages=request_messages,
                     tools=tool_definitions,
                     max_output_tokens=self._max_output_tokens,
                     continuation_id=continuation_id,
                 )
-            )
+                await self._emit_trace(
+                    TraceEvent(
+                        event_type=TraceEventType.LLM_REQUEST,
+                        user_id=session.user_id,
+                        session_id=session.session_id,
+                        turn_id=turn_id,
+                        loop_step=loop_step,
+                        continuation_present=continuation_id is not None,
+                        message_count=len(request.messages),
+                        message_roles=[message.role for message in request.messages],
+                        tool_names=[tool.name for tool in request.tools],
+                        max_output_tokens=request.max_output_tokens,
+                    )
+                )
+                stage = "llm_complete"
+                llm_started = perf_counter()
+                result = await self._llm.complete(request)
+                llm_latency = self._elapsed_ms(llm_started)
+                await self._emit_trace(
+                    TraceEvent(
+                        event_type=TraceEventType.LLM_RESPONSE,
+                        user_id=session.user_id,
+                        session_id=session.session_id,
+                        turn_id=turn_id,
+                        loop_step=loop_step,
+                        latency_ms=llm_latency,
+                        llm_response_type=result.response_type,
+                        reasoning_present=result.reasoning_present,
+                        provider_response_id_present=bool(
+                            result.provider_response_id
+                        ),
+                        tool_call_count=len(result.assistant_message.tool_calls),
+                        input_tokens=(
+                            result.usage.input_tokens if result.usage else None
+                        ),
+                        output_tokens=(
+                            result.usage.output_tokens if result.usage else None
+                        ),
+                    )
+                )
 
-            if result.response_type is LLMResponseType.FINAL:
+                if result.response_type is LLMResponseType.FINAL:
+                    self._append(session, result.assistant_message)
+                    stage = "final_checkpoint"
+                    await self._checkpoint(session, checkpoint)
+                    answer = result.assistant_message.content or ""
+                    await self._emit_finish(
+                        session=session,
+                        turn_id=turn_id,
+                        status=AgentRunStatus.COMPLETED,
+                        final_answer=answer,
+                        loop_steps=loop_step,
+                        run_started=run_started,
+                    )
+                    return AgentRunResult(
+                        user_id=session.user_id,
+                        session_id=session.session_id,
+                        turn_id=turn_id,
+                        status=AgentRunStatus.COMPLETED,
+                        final_answer=answer,
+                        loop_steps=loop_step,
+                    )
+
+                stage = "llm_protocol"
+                if result.response_type is not LLMResponseType.TOOL_CALLS:
+                    raise LLMProtocolError(
+                        "unsupported normalized LLM response: "
+                        f"{result.response_type}"
+                    )
+                if (
+                    not result.provider_response_id
+                    or not result.provider_response_id.strip()
+                ):
+                    raise LLMProtocolError(
+                        "tool-call response requires a non-empty "
+                        "provider_response_id"
+                    )
+
                 self._append(session, result.assistant_message)
+                tool_messages: list[ConversationMessage] = []
+                for call in result.assistant_message.tool_calls:
+                    await self._emit_trace(
+                        TraceEvent(
+                            event_type=TraceEventType.TOOL_START,
+                            user_id=session.user_id,
+                            session_id=session.session_id,
+                            turn_id=turn_id,
+                            loop_step=loop_step,
+                            tool_name=call.name,
+                            tool_call_id=call.id,
+                            tool_args=self._safe_tool_args(call.arguments_json),
+                        )
+                    )
+                    stage = "tool_execute"
+                    tool_result = await self._tools.execute(call, tool_context)
+                    await self._emit_trace(
+                        TraceEvent(
+                            event_type=TraceEventType.TOOL_RESULT,
+                            user_id=session.user_id,
+                            session_id=session.session_id,
+                            turn_id=turn_id,
+                            loop_step=loop_step,
+                            latency_ms=tool_result.latency_ms,
+                            tool_name=tool_result.tool_name,
+                            tool_call_id=tool_result.tool_call_id,
+                            tool_ok=tool_result.ok,
+                            tool_result=self._trace_tool_result(tool_result),
+                        )
+                    )
+                    tool_message = self._tool_message(tool_result)
+                    self._append(session, tool_message)
+                    tool_messages.append(tool_message)
+
+                stage = "tool_checkpoint"
                 await self._checkpoint(session, checkpoint)
-                return AgentRunResult(
+                continuation_id = result.provider_response_id
+                request_messages = tool_messages
+
+            terminal_message = ConversationMessage(
+                role=MessageRole.ASSISTANT,
+                content=self.MAX_STEPS_MESSAGE,
+            )
+            self._append(session, terminal_message)
+            stage = "final_checkpoint"
+            await self._checkpoint(session, checkpoint)
+            await self._emit_finish(
+                session=session,
+                turn_id=turn_id,
+                status=AgentRunStatus.MAX_STEPS,
+                final_answer=self.MAX_STEPS_MESSAGE,
+                loop_steps=self._max_steps,
+                run_started=run_started,
+            )
+            return AgentRunResult(
+                user_id=session.user_id,
+                session_id=session.session_id,
+                turn_id=turn_id,
+                status=AgentRunStatus.MAX_STEPS,
+                final_answer=self.MAX_STEPS_MESSAGE,
+                loop_steps=self._max_steps,
+            )
+        except Exception as exc:
+            await self._emit_trace(
+                TraceEvent(
+                    event_type=TraceEventType.ERROR,
                     user_id=session.user_id,
                     session_id=session.session_id,
                     turn_id=turn_id,
-                    status=AgentRunStatus.COMPLETED,
-                    final_answer=result.assistant_message.content or "",
-                    loop_steps=loop_step,
+                    loop_step=loop_step,
+                    error={
+                        "type": type(exc).__name__,
+                        "code": type(exc).__name__,
+                        "stage": stage,
+                        "message": "agent operation failed",
+                    },
                 )
-
-            if result.response_type is not LLMResponseType.TOOL_CALLS:
-                raise LLMProtocolError(
-                    f"unsupported normalized LLM response: {result.response_type}"
-                )
-            if (
-                not result.provider_response_id
-                or not result.provider_response_id.strip()
-            ):
-                raise LLMProtocolError(
-                    "tool-call response requires a non-empty provider_response_id"
-                )
-
-            self._append(session, result.assistant_message)
-            tool_messages: list[ConversationMessage] = []
-            for call in result.assistant_message.tool_calls:
-                tool_result = await self._tools.execute(call, tool_context)
-                tool_message = self._tool_message(tool_result)
-                self._append(session, tool_message)
-                tool_messages.append(tool_message)
-
-            await self._checkpoint(session, checkpoint)
-            continuation_id = result.provider_response_id
-            request_messages = tool_messages
-
-        terminal_message = ConversationMessage(
-            role=MessageRole.ASSISTANT,
-            content=self.MAX_STEPS_MESSAGE,
-        )
-        self._append(session, terminal_message)
-        await self._checkpoint(session, checkpoint)
-        return AgentRunResult(
-            user_id=session.user_id,
-            session_id=session.session_id,
-            turn_id=turn_id,
-            status=AgentRunStatus.MAX_STEPS,
-            final_answer=self.MAX_STEPS_MESSAGE,
-            loop_steps=self._max_steps,
-        )
+            )
+            raise
 
     @staticmethod
     def _append(session: SessionState, message: ConversationMessage) -> None:
@@ -160,6 +301,58 @@ class AgentRuntime:
     ) -> None:
         if checkpoint is not None:
             await checkpoint(session)
+
+    async def _emit_trace(self, event: TraceEvent) -> None:
+        if self._trace_sink is None:
+            return
+        try:
+            await self._trace_sink.emit(event)
+        except Exception:
+            pass
+
+    async def _emit_finish(
+        self,
+        *,
+        session: SessionState,
+        turn_id: str,
+        status: AgentRunStatus,
+        final_answer: str,
+        loop_steps: int,
+        run_started: float,
+    ) -> None:
+        await self._emit_trace(
+            TraceEvent(
+                event_type=TraceEventType.RUN_FINISH,
+                user_id=session.user_id,
+                session_id=session.session_id,
+                turn_id=turn_id,
+                latency_ms=self._elapsed_ms(run_started),
+                final_answer=final_answer,
+                status=status,
+                loop_steps=loop_steps,
+            )
+        )
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> float:
+        return max(0.0, (perf_counter() - started) * 1_000)
+
+    @staticmethod
+    def _safe_tool_args(arguments_json: str) -> Any:
+        try:
+            return json.loads(arguments_json)
+        except (json.JSONDecodeError, ValueError):
+            return {"parse_status": "invalid_json"}
+
+    @staticmethod
+    def _trace_tool_result(result: ToolResult) -> dict[str, Any]:
+        if result.ok:
+            return {"ok": True, "output": result.output}
+        error = result.error
+        return {
+            "ok": False,
+            "error": error.model_dump(mode="json") if error else None,
+        }
 
     @staticmethod
     def _tool_message(result: ToolResult) -> ConversationMessage:
