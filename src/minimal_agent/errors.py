@@ -28,5 +28,9 @@ class ContextCompressionError(MinimalAgentError):
     """Raised internally when summary generation fails."""
 
 
+class ContextWindowExceededError(MinimalAgentError):
+    """Raised when mandatory request content cannot fit the context window."""
+
+
 class ToolExecutionError(MinimalAgentError):
     """A deliberately safe tool error whose message may be returned to the LLM."""

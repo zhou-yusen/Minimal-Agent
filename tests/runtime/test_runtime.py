@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from minimal_agent.context import ContextManager
 from minimal_agent.errors import LLMProtocolError
 from minimal_agent.models import (
     AgentRunStatus,
@@ -109,6 +110,12 @@ def runtime(
     return AgentRuntime(
         llm=fake,
         tools=registry or standard_registry(),
+        context_manager=ContextManager(
+            llm=fake,
+            context_token_limit=100_000,
+            compression_trigger=100_000,
+            recent_turns_to_keep=4,
+        ),
         system_prompt=SYSTEM_PROMPT,
         max_steps=max_steps,
         max_output_tokens=MAX_OUTPUT_TOKENS,

@@ -242,3 +242,44 @@ request shape for each loop round, and identified the missing-ID side-effect gua
 Runtime tests assert first-round full context, continuation rounds containing only
 new tool messages, repeated request configuration, immediate response-ID chaining,
 and no Todo mutation when a tool-call response lacks a provider ID.
+
+## 2026-07-24 - Phase 5B: treat recent-turn retention as a soft target
+
+### Problem
+
+Keeping a configured number of recent turns does not guarantee that the complete
+request fits: the system prompt, tool schemas, summary, individual turns, and
+reserved output tokens can each consume the remaining context window.
+
+### Analysis
+
+A compression trigger decides when summarization is worth attempting, while the
+hard context limit is an independent safety boundary. Summary generation may fail
+or return text that is still too large. Cropping individual messages would break
+tool-call/result pairs and could silently truncate the current user request.
+
+### Options
+
+1. Always retain `recent_turns_to_keep`, even when the request exceeds the limit.
+2. Truncate strings or individual messages until the estimate fits.
+3. Estimate the full request, summarize only older completed turns, then remove
+   oldest complete raw turns as needed while always retaining the incomplete turn.
+
+### Decision
+
+Use option 3. Recent-turn retention is a priority target rather than a hard
+guarantee. A temporary labeled Assistant message represents the persisted summary;
+raw history remains unchanged. If mandatory system, schema, current-turn, and
+output-reserve content cannot fit, fail with `ContextWindowExceededError` instead
+of truncating user input.
+
+### AI Assistance
+
+AI separated trigger and hard-limit semantics, defined completed-turn boundaries,
+and designed non-destructive fallback behavior for exceptions and empty summaries.
+
+### Verification
+
+Context tests cover full-request budget components, rolling boundaries, intact
+tool-call/result turns, failed and oversized summaries, reduced recent suffixes,
+immutable raw history, and an explicit impossible-request error.

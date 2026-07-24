@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
+from minimal_agent.context import ContextManager
 from minimal_agent.errors import LLMProtocolError
 from minimal_agent.models import (
     AgentRunResult,
@@ -34,6 +35,7 @@ class AgentRuntime:
         *,
         llm: LLMClient,
         tools: ToolRegistry,
+        context_manager: ContextManager,
         system_prompt: str,
         max_steps: int,
         max_output_tokens: int,
@@ -47,6 +49,7 @@ class AgentRuntime:
 
         self._llm = llm
         self._tools = tools
+        self._context_manager = context_manager
         self._system_prompt = system_prompt
         self._max_steps = max_steps
         self._max_output_tokens = max_output_tokens
@@ -63,7 +66,13 @@ class AgentRuntime:
             ConversationMessage(role=MessageRole.USER, content=user_message),
         )
 
-        request_messages = list(session.history)
+        tool_definitions = self._tools.definitions()
+        request_messages = await self._context_manager.build(
+            session,
+            system_prompt=self._system_prompt,
+            tools=tool_definitions,
+            max_output_tokens=self._max_output_tokens,
+        )
         continuation_id: str | None = None
         tool_context = ToolContext(
             user_id=session.user_id,
@@ -76,7 +85,7 @@ class AgentRuntime:
                 LLMRequest(
                     system_prompt=self._system_prompt,
                     messages=request_messages,
-                    tools=self._tools.definitions(),
+                    tools=tool_definitions,
                     max_output_tokens=self._max_output_tokens,
                     continuation_id=continuation_id,
                 )

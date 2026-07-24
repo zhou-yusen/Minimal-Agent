@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from minimal_agent.context import ContextManager
 from minimal_agent.errors import SessionNotFoundError, SessionStoreError
 from minimal_agent.models import (
     ConversationMessage,
@@ -56,6 +57,12 @@ def runtime(
     return AgentRuntime(
         llm=fake,
         tools=registry or ToolRegistry(),
+        context_manager=ContextManager(
+            llm=fake,
+            context_token_limit=100_000,
+            compression_trigger=100_000,
+            recent_turns_to_keep=4,
+        ),
         system_prompt="Use tools when needed.",
         max_steps=4,
         max_output_tokens=300,
