@@ -170,6 +170,20 @@ def test_main_requires_api_key(monkeypatch, capsys) -> None:
     assert capsys.readouterr().out == "DEEPSEEK_API_KEY is not set.\n"
 
 
+def test_console_output_replaces_unencodable_characters(monkeypatch) -> None:
+    configured: dict[str, str] = {}
+
+    class FakeStdout:
+        def reconfigure(self, *, errors: str) -> None:
+            configured["errors"] = errors
+
+    monkeypatch.setattr(cli.sys, "stdout", FakeStdout())
+
+    cli.configure_console_output()
+
+    assert configured == {"errors": "replace"}
+
+
 def test_main_generates_short_session(monkeypatch) -> None:
     captured: dict[str, str] = {}
     service = RecordingService()

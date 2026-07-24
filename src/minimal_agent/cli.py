@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 from collections.abc import Callable, Sequence
 from uuid import uuid4
 
@@ -16,6 +17,13 @@ from minimal_agent.service import AgentService
 
 InputReader = Callable[[str], str]
 OutputWriter = Callable[[str], None]
+
+
+def configure_console_output() -> None:
+    """Prevent unsupported provider Unicode from crashing Windows consoles."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(errors="replace")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +77,7 @@ async def run_interactive(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_console_output()
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.debug else logging.WARNING)
     settings = Settings.from_env()

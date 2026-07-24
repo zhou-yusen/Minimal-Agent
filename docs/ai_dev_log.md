@@ -542,3 +542,42 @@ scripted fake LLM with a real temporary SQLite store.
 CLI-focused tests prove production tool wiring, new-session creation, durable
 resume across newly constructed services, message delegation, exit behavior,
 safe provider timeout text, missing-key handling, and short generated session IDs.
+
+## 2026-07-24 - Phase 8B: prevent provider Unicode from crashing Windows CLI
+
+### Problem
+
+The real persistence demo reached DeepSeek and SQLite successfully, but a final
+response containing a Unicode symbol unsupported by the active Windows GBK stdout
+caused `print()` to raise `UnicodeEncodeError` and terminate the CLI.
+
+### Analysis
+
+The failure was confined to terminal rendering. Changing provider text, stripping
+Unicode, or catching all output exceptions would either alter content or hide
+unrelated failures. Python text streams support an explicit encoding-error policy.
+
+### Options
+
+1. Remove non-ASCII characters from every model response.
+2. Catch `UnicodeEncodeError` around every CLI print call.
+3. Configure stdout once with `errors="replace"` when `reconfigure()` is
+   available.
+
+### Decision
+
+Use option 3. The CLI keeps the console's selected encoding but replaces only
+unsupported glyphs instead of crashing. Runtime, persistence, provider mapping,
+and trace behavior remain unchanged.
+
+### AI Assistance
+
+AI reproduced the real failure boundary, isolated it from successful durable
+state changes, implemented the smallest CLI-only portability fix, and added a
+focused regression test.
+
+### Verification
+
+The focused CLI suite passed, and the same real composite session was reopened
+after the fix. Its previously added Todo item was returned from SQLite without a
+traceback, completing the restart-persistence demo.
