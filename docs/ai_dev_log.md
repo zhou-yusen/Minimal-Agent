@@ -283,3 +283,43 @@ and designed non-destructive fallback behavior for exceptions and empty summarie
 Context tests cover full-request budget components, rolling boundaries, intact
 tool-call/result turns, failed and oversized summaries, reduced recent suffixes,
 immutable raw history, and an explicit impossible-request error.
+
+## 2026-07-24 - Phase 5C: inject persistence as milestone checkpoints
+
+### Problem
+
+The runtime mutates history and tool state across several side-effect boundaries,
+but coupling it directly to SQLite would violate the frozen Runtime/Store split.
+
+### Analysis
+
+Durability is required after the accepted user message, after a complete batch of
+tool results, and after a terminal assistant message. Saving per tool would expose
+partial batches, while saving summary metadata separately would add a persistence
+event that cannot recover an otherwise incomplete turn.
+
+### Options
+
+1. Inject `SessionStore` into `AgentRuntime`.
+2. Let an outer service save only after the entire run completes.
+3. Pass one optional asynchronous save callback into each run and invoke it only
+   at the defined durable milestones.
+
+### Decision
+
+Use option 3. `AgentService` owns session loading and passes `store.save`; Runtime
+retains only a provider-neutral callback. Checkpoint exceptions propagate and
+prevent later LLM calls, with no retry or in-memory rollback. Summary changes are
+persisted by the next normal tool or terminal checkpoint.
+
+### AI Assistance
+
+AI mapped mutation points to an exact checkpoint sequence, kept batch atomicity at
+the orchestration boundary, and added failure-injection tests for every checkpoint
+position.
+
+### Verification
+
+Snapshot tests prove user, tool-batch, final, and max-step ordering. End-to-end
+tests recreate the SQLite store and recover complete history, Todo state, summary
+metadata, and the raw-history summary boundary while preserving session isolation.

@@ -25,13 +25,18 @@ models. Whether matching reasoning items must also be replayed when no
 test question. Do not add reasoning persistence or a provider-state store before
 that test provides evidence.
 
-## Phase 5 integration pending
+## Phase 5C durable checkpoint integration
 
-The frozen architecture requires durable saves after accepting a user message,
-after each tool-result batch, and after final or max-step termination. Phase 5A
-provides persistence and Phase 5B provides bounded context, but the outer
-checkpoint wiring is intentionally still pending review. Do not inject SQLite
-into `AgentRuntime` or combine this concern with context selection.
+`AgentRuntime.run()` accepts an optional asynchronous checkpoint callback. It
+checkpoints after accepting the user message, once after each complete batch of
+tool results, and after the final or max-step terminal message. The runtime does
+not know about `SessionStore` or SQLite. `AgentService` supplies `store.save` as
+the callback after loading the composite session identity.
+
+Checkpoint failures propagate without retry or rollback and stop later LLM or
+tool side effects. Compression metadata has no independent checkpoint; it is
+persisted with the next tool-batch or terminal checkpoint while raw history
+remains the durable recovery source.
 
 ## Key trade-offs
 
@@ -55,3 +60,5 @@ into `AgentRuntime` or combine this concern with context selection.
 - Compression advances a summary boundary without deleting stored raw history.
 - Context sent for completion fits the configured limit after accounting for fixed prompt/schema costs and reserved response tokens.
 - A compression failure is observable but does not by itself fail the user turn.
+- Reopening SQLite after a completed tool turn recovers history, tool state, and
+  successful compression metadata.

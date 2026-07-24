@@ -14,6 +14,16 @@ Make every agent run diagnosable and ensure boundary failures have predictable b
 - Define and map `SessionNotFoundError`, `LLMTimeoutError`, `LLMProtocolError`, `SessionStoreError`, and context errors.
 - Configure provider timeout and at most one simple retry only if adapter evidence shows a transient timeout is safe; do not add a retry framework.
 
+## Deferred from Phase 5C
+
+- Resolve the failure-turn recovery question for a durably checkpointed user
+  message when context construction, the LLM, or the provider fails before the
+  next checkpoint. Do not delete the user message, synthesize an assistant
+  response, or retry until Phase 6 defines and tests the recovery contract.
+- Make `ContextManager` compression failures observable through trace events.
+  Its current best-effort `except Exception: pass` behavior must remain unchanged
+  until tracing is introduced.
+
 ## Key trade-offs
 
 - A single optional-field event model is easier to inspect than a class hierarchy.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
 from minimal_agent.context import ContextManager
@@ -21,6 +22,8 @@ from minimal_agent.models import (
 )
 from minimal_agent.protocols import LLMClient
 from minimal_agent.tools.registry import ToolRegistry
+
+Checkpoint = Callable[[SessionState], Awaitable[None]]
 
 
 class AgentRuntime:
@@ -58,6 +61,8 @@ class AgentRuntime:
         self,
         session: SessionState,
         user_message: str,
+        *,
+        checkpoint: Checkpoint | None = None,
     ) -> AgentRunResult:
         """Mutate ``session`` with one bounded user turn and return its outcome."""
         turn_id = str(uuid4())
@@ -65,6 +70,7 @@ class AgentRuntime:
             session,
             ConversationMessage(role=MessageRole.USER, content=user_message),
         )
+        await self._checkpoint(session, checkpoint)
 
         tool_definitions = self._tools.definitions()
         request_messages = await self._context_manager.build(
@@ -93,6 +99,7 @@ class AgentRuntime:
 
             if result.response_type is LLMResponseType.FINAL:
                 self._append(session, result.assistant_message)
+                await self._checkpoint(session, checkpoint)
                 return AgentRunResult(
                     user_id=session.user_id,
                     session_id=session.session_id,
@@ -122,6 +129,7 @@ class AgentRuntime:
                 self._append(session, tool_message)
                 tool_messages.append(tool_message)
 
+            await self._checkpoint(session, checkpoint)
             continuation_id = result.provider_response_id
             request_messages = tool_messages
 
@@ -130,6 +138,7 @@ class AgentRuntime:
             content=self.MAX_STEPS_MESSAGE,
         )
         self._append(session, terminal_message)
+        await self._checkpoint(session, checkpoint)
         return AgentRunResult(
             user_id=session.user_id,
             session_id=session.session_id,
@@ -143,6 +152,14 @@ class AgentRuntime:
     def _append(session: SessionState, message: ConversationMessage) -> None:
         session.history.append(message)
         session.updated_at = utc_now()
+
+    @staticmethod
+    async def _checkpoint(
+        session: SessionState,
+        checkpoint: Checkpoint | None,
+    ) -> None:
+        if checkpoint is not None:
+            await checkpoint(session)
 
     @staticmethod
     def _tool_message(result: ToolResult) -> ConversationMessage:
