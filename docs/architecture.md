@@ -265,6 +265,8 @@ MVP agent/
 │   ├── runtime.py                    # bounded loop only
 │   ├── context.py
 │   ├── service.py                    # thin lifecycle facade
+│   ├── app.py                        # production composition root
+│   ├── cli.py                        # thin interactive adapter
 │   ├── llm/
 │   │   ├── base.py
 │   │   └── deepseek_client.py
@@ -278,7 +280,7 @@ MVP agent/
 │   │   ├── base.py
 │   │   └── sqlite.py
 │   ├── tracing.py
-│   └── api.py
+│   └── api.py                        # deferred; not in Phase 8A
 ├── tests/
 │   ├── fakes.py
 │   ├── unit/

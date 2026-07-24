@@ -131,6 +131,7 @@ def completion_request(
     *,
     messages: list[ConversationMessage] | None = None,
     tools: list[ToolDefinition] | None = None,
+    tool_choice: str | None = None,
 ) -> LLMRequest:
     return LLMRequest(
         system_prompt="Use the available tools when necessary.",
@@ -138,6 +139,7 @@ def completion_request(
         or [ConversationMessage(role=MessageRole.USER, content="Hello")],
         tools=tools or [],
         max_output_tokens=500,
+        tool_choice=tool_choice,
     )
 
 
@@ -202,6 +204,25 @@ async def test_tool_definition_uses_nested_chat_function_schema() -> None:
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_choice", ["auto", "none", "required"])
+async def test_explicit_tool_choice_is_forwarded(tool_choice: str) -> None:
+    client, sdk = make_client(sdk_response(content="Done"))
+
+    await client.complete(completion_request(tool_choice=tool_choice))
+
+    assert sdk.chat.completions.calls[0]["tool_choice"] == tool_choice
+
+
+@pytest.mark.asyncio
+async def test_absent_tool_choice_is_not_sent() -> None:
+    client, sdk = make_client(sdk_response(content="Done"))
+
+    await client.complete(completion_request())
+
+    assert "tool_choice" not in sdk.chat.completions.calls[0]
 
 
 @pytest.mark.asyncio

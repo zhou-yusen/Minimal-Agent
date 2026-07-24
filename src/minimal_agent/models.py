@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -86,6 +86,7 @@ class LLMRequest(BaseModel):
     messages: list[ConversationMessage]
     tools: list[ToolDefinition]
     max_output_tokens: int = Field(ge=1)
+    tool_choice: Literal["auto", "none", "required"] | None = None
 
 
 class SummaryRequest(BaseModel):

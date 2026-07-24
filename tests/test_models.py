@@ -60,6 +60,17 @@ def test_provider_state_is_not_part_of_request_or_session() -> None:
     assert "provider_response_id" not in session.model_dump()
 
 
+def test_llm_request_rejects_unknown_tool_choice() -> None:
+    with pytest.raises(ValidationError):
+        LLMRequest(
+            system_prompt="system",
+            messages=[],
+            tools=[],
+            max_output_tokens=100,
+            tool_choice="sometimes",  # type: ignore[arg-type]
+        )
+
+
 def test_tool_message_requires_call_correlation() -> None:
     with pytest.raises(ValidationError):
         ConversationMessage(role=MessageRole.TOOL, content="4")

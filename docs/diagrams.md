@@ -9,8 +9,8 @@ flowchart TB
     User["用户 / API 调用方"]
 
     subgraph Adapters["接口层"]
-        API["FastAPI"]
-        CLI["CLI / Demo"]
+        API["FastAPI (deferred)"]
+        CLI["Interactive CLI"]
     end
 
     Service["AgentService<br/>Session 生命周期与 Runtime 调用"]

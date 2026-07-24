@@ -69,18 +69,19 @@ class DeepSeekChatClient:
         )
 
     async def complete(self, request: LLMRequest) -> LLMResult:
-        response = await self._create_completion(
-            {
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": request.system_prompt},
-                    *self._messages_to_chat(request.messages),
-                ],
-                "tools": self._tools_to_chat(request.tools),
-                "max_tokens": request.max_output_tokens,
-                "extra_body": self._THINKING_DISABLED,
-            }
-        )
+        create_args: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": request.system_prompt},
+                *self._messages_to_chat(request.messages),
+            ],
+            "tools": self._tools_to_chat(request.tools),
+            "max_tokens": request.max_output_tokens,
+            "extra_body": self._THINKING_DISABLED,
+        }
+        if request.tool_choice is not None:
+            create_args["tool_choice"] = request.tool_choice
+        response = await self._create_completion(create_args)
         visible_text, tool_calls, reasoning_present = self._extract_message(
             response
         )

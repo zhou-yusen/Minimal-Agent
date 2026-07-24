@@ -454,3 +454,91 @@ Offline adapter tests use real OpenAI SDK ChatCompletion and exception model
 classes while faking only `chat.completions.create`. Runtime tests verify complete
 message replay, ordered multi-tool batches, exact `tool_call_id` correlation,
 thinking privacy, no hidden SDK retries, and provider-neutral error mapping.
+
+## 2026-07-24 - Phase 7B: gate real DeepSeek protocol tests explicitly
+
+### Problem
+
+Real provider tests must prove tool-call/result protocol compatibility without
+making the normal pytest suite network-dependent or relying on autonomous tool
+routing.
+
+### Analysis
+
+A locally present `.env` must not implicitly authorize network access. Forced
+provider tool choice is useful for deterministic protocol verification, but normal
+Runtime behavior should continue using the provider default. Cross-turn replay
+must be tested from normalized local messages rather than provider conversation
+state.
+
+### Options
+
+1. Load `.env` automatically whenever pytest starts.
+2. Depend on the model voluntarily selecting Calculator for every protocol test.
+3. Require both an explicit opt-in and process credential, add a minimal optional
+   `tool_choice` request field, and keep the forced echo tool inside tests.
+
+### Decision
+
+Use option 3. `LLMRequest.tool_choice` accepts only `auto`, `none`, or `required`;
+Runtime leaves it unset. Five marked tests cover direct final, forced test-local
+echo, same-ID result replay, normal Calculator routing, and cross-turn local
+history replay. SDK retries and thinking remain disabled.
+
+### AI Assistance
+
+AI translated the protocol requirements into isolated real-network tests,
+implemented the double environment gate, and kept provider controls out of the
+production Runtime and ToolRegistry.
+
+### Verification
+
+With both integration variables removed from the pytest subprocess, the suite
+reported 168 passed and 5 skipped without network access. The current Codex
+process did not expose `DEEPSEEK_API_KEY`, so real tests were correctly left as
+NOT EXECUTED rather than simulated or reported as passing.
+
+The user subsequently executed the gated suite in a credentialed local shell and
+reported `5 passed in 12.52s`, including the Calculator Runtime smoke and
+cross-turn local-history replay. This closes the deferred real-provider protocol
+gate without changing retry, thinking, or provider-state decisions.
+
+## 2026-07-24 - Phase 8A: one composition root and a thin interactive CLI
+
+### Problem
+
+All runtime components worked independently, but there was no executable path
+that assembled the production tools, durable store, real provider, context, trace,
+runtime, and service for continuous user interaction.
+
+### Analysis
+
+Session creation/resume and terminal input are adapter concerns. Putting either
+inside AgentRuntime would mix I/O and orchestration, while a CLI framework would
+add a dependency without simplifying the two commands and three arguments needed.
+
+### Options
+
+1. Put component construction and the chat loop directly in one CLI module.
+2. Add a DI container and command framework.
+3. Use one small composition root plus a stdlib async CLI that delegates every
+   message to AgentService.
+
+### Decision
+
+Use option 3. `build_service()` owns only object construction. The CLI creates or
+resumes the composite session, ignores blank input, exits on `/exit` or `/quit`,
+and shows safe domain error text. Normal logging is WARNING; `--debug` enables the
+existing JSON trace sink at INFO. Settings still read only process environment.
+
+### AI Assistance
+
+AI mapped existing constructor contracts into the composition root, isolated a
+small injectable input/output loop for tests, and designed a restart test using a
+scripted fake LLM with a real temporary SQLite store.
+
+### Verification
+
+CLI-focused tests prove production tool wiring, new-session creation, durable
+resume across newly constructed services, message delegation, exit behavior,
+safe provider timeout text, missing-key handling, and short generated session IDs.
