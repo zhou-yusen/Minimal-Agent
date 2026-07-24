@@ -16,14 +16,12 @@ Make conversations durable and isolated while keeping LLM requests within a pred
 - On compression failure, keep the prior summary and construct the largest safe complete-turn suffix, always retaining the current user turn.
 - Verify todo state is stored inside each session payload.
 
-## Deferred provider validation
+## Provider replay decision
 
-Phase 5 must not assume that locally replaying historical `function_call` and
-`function_call_output` items is sufficient for a new user turn with reasoning
-models. Whether matching reasoning items must also be replayed when no
-`previous_response_id` is used remains an explicit Phase 5/7 real-API integration
-test question. Do not add reasoning persistence or a provider-state store before
-that test provides evidence.
+Phase 7A selects DeepSeek Chat Completions with thinking explicitly disabled.
+Context is rebuilt from the local summary and complete normalized message turns;
+an active tool run replays the bounded message sequence with assistant tool calls
+and matching tool results. Hidden reasoning is neither required nor persisted.
 
 ## Phase 5C durable checkpoint integration
 

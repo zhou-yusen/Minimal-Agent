@@ -9,7 +9,9 @@ from minimal_agent.config import Settings
 def test_settings_do_not_require_api_key() -> None:
     settings = Settings.from_env({})
 
-    assert settings.openai_api_key is None
+    assert settings.deepseek_api_key is None
+    assert settings.deepseek_model == "deepseek-v4-flash"
+    assert settings.deepseek_base_url == "https://api.deepseek.com"
     assert settings.context_token_limit == 8_000
     assert settings.response_token_reserve == 1_000
 
@@ -17,8 +19,9 @@ def test_settings_do_not_require_api_key() -> None:
 def test_settings_parse_documented_environment() -> None:
     settings = Settings.from_env(
         {
-            "OPENAI_API_KEY": "test-secret",
-            "OPENAI_MODEL": "test-model",
+            "DEEPSEEK_API_KEY": "test-secret",
+            "DEEPSEEK_MODEL": "test-model",
+            "DEEPSEEK_BASE_URL": "https://deepseek.example.test",
             "MAX_LOOP_STEPS": "9",
             "LLM_TIMEOUT_SECONDS": "12.5",
             "SESSION_DATABASE_PATH": "tmp/test.db",
@@ -29,9 +32,10 @@ def test_settings_parse_documented_environment() -> None:
         }
     )
 
-    assert settings.openai_api_key is not None
-    assert settings.openai_api_key.get_secret_value() == "test-secret"
-    assert settings.openai_model == "test-model"
+    assert settings.deepseek_api_key is not None
+    assert settings.deepseek_api_key.get_secret_value() == "test-secret"
+    assert settings.deepseek_model == "test-model"
+    assert settings.deepseek_base_url == "https://deepseek.example.test"
     assert settings.max_loop_steps == 9
     assert settings.llm_timeout_seconds == 12.5
     assert settings.session_database_path == Path("tmp/test.db")

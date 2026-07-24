@@ -78,7 +78,7 @@ class ToolDefinition(BaseModel):
 
 
 class LLMRequest(BaseModel):
-    """A completion request with optional active-run provider continuation."""
+    """A provider-neutral completion request."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -86,7 +86,6 @@ class LLMRequest(BaseModel):
     messages: list[ConversationMessage]
     tools: list[ToolDefinition]
     max_output_tokens: int = Field(ge=1)
-    continuation_id: str | None = None
 
 
 class SummaryRequest(BaseModel):
@@ -261,7 +260,6 @@ class TraceEvent(BaseModel):
     latency_ms: float | None = Field(default=None, ge=0)
     llm_response_type: LLMResponseType | None = None
     reasoning_present: bool | None = None
-    continuation_present: bool | None = None
     provider_response_id_present: bool | None = None
     message_count: int | None = Field(default=None, ge=0)
     message_roles: list[MessageRole] | None = None

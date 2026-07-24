@@ -26,7 +26,7 @@ from minimal_agent.models import (
     TraceEvent,
     TraceEventType,
 )
-from minimal_agent.llm.openai_client import OpenAIResponsesClient
+from minimal_agent.llm.deepseek_client import DeepSeekChatClient
 from minimal_agent.runtime import AgentRuntime
 from minimal_agent.tools.calculator import CalculatorTool
 from minimal_agent.tools.registry import ToolRegistry
@@ -414,18 +414,16 @@ async def test_checkpoint_failures_emit_safe_error_event(
 
 
 @pytest.mark.asyncio
-async def test_llm_protocol_error_is_traced_then_propagated() -> None:
+async def test_adapter_protocol_error_is_traced_then_propagated() -> None:
     sink = InMemoryTraceSink()
-    fake = ScriptedFakeLLM(
-        [tool_calls(None, call("c1", "calculator", '{"expression":"1+1"}'))]
-    )
+    fake = ScriptedFakeLLM([LLMProtocolError("malformed provider response")])
 
     with pytest.raises(LLMProtocolError):
         await make_runtime(fake, sink).run(state(), "Calculate")
 
-    assert event_types(sink)[-2:] == [TraceEventType.LLM_RESPONSE, TraceEventType.ERROR]
+    assert event_types(sink)[-2:] == [TraceEventType.LLM_REQUEST, TraceEventType.ERROR]
     assert sink.events[-1].error["type"] == "LLMProtocolError"
-    assert sink.events[-1].error["stage"] == "llm_protocol"
+    assert sink.events[-1].error["stage"] == "llm_complete"
 
 
 @pytest.mark.asyncio
@@ -464,7 +462,9 @@ async def test_provider_errors_use_stable_safe_trace_codes(
 @pytest.mark.asyncio
 async def test_sdk_provider_body_never_reaches_serialized_trace() -> None:
     private = "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK"
-    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    request = httpx.Request(
+        "POST", "https://api.deepseek.com/chat/completions"
+    )
     response = httpx.Response(
         500,
         request=request,
@@ -477,16 +477,19 @@ async def test_sdk_provider_body_never_reaches_serialized_trace() -> None:
         body={"private": private},
     )
 
-    class ErrorResponses:
+    class ErrorCompletions:
         async def create(self, **kwargs):
             del kwargs
             raise sdk_error
 
-    class ErrorSDK:
-        responses = ErrorResponses()
+    class ErrorChat:
+        completions = ErrorCompletions()
 
-    adapter = OpenAIResponsesClient(
-        Settings(openai_model="gpt-5-mini"),
+    class ErrorSDK:
+        chat = ErrorChat()
+
+    adapter = DeepSeekChatClient(
+        Settings(deepseek_model="deepseek-v4-flash"),
         client=ErrorSDK(),  # type: ignore[arg-type]
     )
     sink = InMemoryTraceSink()

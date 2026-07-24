@@ -28,23 +28,23 @@ Additional required checks cover missing tool, missing session, compression fail
 ## Real LLM integration set (3–5 tests)
 
 1. A direct text request verifies that the real SDK response is normalized into visible final text.
-2. A provider-forced call to a tiny deterministic test tool verifies that the Responses API returns a function call with a usable `call_id`.
-3. Returning that tool's output with the exact same `call_id` verifies the real SDK accepts the result and produces the next response.
+2. A provider-forced call to a tiny deterministic test tool verifies that DeepSeek
+   Chat Completions returns a tool call with a usable `tool_call_id`.
+3. Returning that tool's output with the exact same `tool_call_id` verifies the
+   compatible SDK protocol produces the next response.
 4. An invalid tool-result correlation test verifies a clear provider/adapter failure rather than silent misassociation, when safe and deterministic to run.
 5. A multi-round protocol smoke test may be included, but it must assert protocol continuity rather than require autonomous selection of `calculator`, `search`, or `todo`.
 
-One of the selected 3-5 tests must cover the deferred cross-user-turn question:
-start a new request without `previous_response_id`, rebuild context from local
-Session history containing a prior function-call/output pair, and determine
-whether the provider also requires replayed reasoning items. This validation test
-is not prior authorization to persist hidden reasoning or add provider-state
-abstractions.
+One of the selected 3-5 tests must rebuild a new user turn from local Session
+history containing a prior assistant tool-call/tool-result pair and verify the
+DeepSeek Chat Completions protocol accepts that replay with thinking disabled.
+This test must not enable or persist hidden reasoning.
 
 ## Planned implementation
 
 - Centralize scripted LLM fixtures and trace capture in `tests/fakes.py`.
 - Mark network tests `integration` and skip unless both a credentials variable and explicit opt-in flag are present.
-- Use a low-cost configurable model and conservative timeouts.
+- Use configurable `deepseek-v4-flash` and conservative timeouts.
 - Assert tool names/results, session state, statuses, and trace types rather than exact prose.
 - Keep strict autonomous tool-selection and full Tool Loop assertions in the offline scripted-LLM suite. Real integration tests may force a specific test tool through the one supported provider API.
 

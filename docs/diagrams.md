@@ -28,7 +28,7 @@ flowchart TB
     end
 
     subgraph Infrastructure["基础设施"]
-        LLM["LLMClient<br/>官方 OpenAI SDK"]
+        LLM["LLMClient<br/>DeepSeek Chat Completions<br/>OpenAI Python SDK"]
         Store["SessionStore<br/>SQLite"]
         Trace["TraceSink<br/>结构化日志"]
     end
@@ -44,7 +44,7 @@ flowchart TB
     Runtime -->|"加载 / 分阶段保存状态"| Store
     Runtime -->|"构造受限上下文"| Context
     Context -->|"必要时请求摘要"| LLM
-    Runtime -->|"首轮完整 Context；后续 previous_response_id + Tool Outputs"| LLM
+    Runtime -->|"每轮重放 bounded context + active-run Tool Messages"| LLM
     LLM -->|"Final / Tool Calls / reasoning_present / response.id"| Runtime
 
     Runtime --> Registry
@@ -72,7 +72,7 @@ flowchart TD
     UseSummary["保存 Summary 和摘要边界"]
     Fallback["记录压缩错误<br/>保留旧 Summary<br/>选择可容纳的最近完整轮次"]
     BuildContext["构造 LLM Context<br/>System Prompt + Summary<br/>+ 最近轮次 + 当前执行消息"]
-    BuildContinuation["构造同一 active run 的续接请求<br/>previous_response_id + 新 Tool Results"]
+    BuildContinuation["构造同一 active run 的下一轮请求<br/>完整 replay assistant calls + Tool Results"]
 
     InitLoop["loop_step = 1"]
     LLMCall["调用真实 LLM API<br/>附带 Tool Schemas"]

@@ -1,6 +1,8 @@
 # Phase 4 Task — Agent Runtime Loop
 
-Phase 4 is delivered in two bounded steps: Phase 4A implements only the OpenAI Responses Adapter; Phase 4B later implements `AgentRuntime`.
+Phase 4 delivered the provider adapter and `AgentRuntime`. Phase 7A replaces the
+original Responses-specific adapter with the frozen V1 DeepSeek Chat Completions
+adapter while preserving the runtime/tool boundaries established here.
 
 ## Problem solved
 
@@ -8,16 +10,19 @@ Implement the required LLM/tool feedback cycle with explicit termination and no 
 
 ## Planned implementation
 
-- Implement one real adapter only: the OpenAI Responses API through the official Python SDK. Do not add adapters or compatibility layers for Chat Completions, Claude, Gemini, or other providers.
-- Normalize Responses API function calls while preserving the exact provider `call_id` as the internal `tool_call_id`; send the same identifier in the matching function-call output on the next request.
-- Phase 4A maps transient `LLMRequest.continuation_id` to `previous_response_id`, detects reasoning items without storing them, and implements text-only summarization. It does not implement the runtime loop.
-- Phase 4B uses each tool-call response's `provider_response_id` only for the next call in the same active run; it starts the next user turn from local bounded Session context with no provider continuation ID.
+- Implement one real adapter only: DeepSeek Chat Completions through the official
+  OpenAI Python SDK's compatible client. Do not add a provider registry or a
+  second provider adapter.
+- Normalize Chat Completions tool calls while preserving each exact provider
+  `tool_call.id` as the internal `tool_call_id` and matching tool-result ID.
+- Detect reasoning presence without reading or persisting reasoning content, and
+  implement text-only summarization with tools omitted and thinking disabled.
 - Implement `AgentRuntime.run()` with a `for` loop bounded by `max_steps`.
-- On the first round, send the current bounded/local context with no continuation
-  ID. On later rounds in the same active run, send only the newly produced tool
-  result messages with the immediately previous provider response ID.
+- On the first round, send the current bounded local context. On later rounds in
+  the same active run, replay that bounded sequence plus every newly produced
+  assistant tool-call message and complete tool-result batch.
 - Repeat the system prompt, registry definitions, and output-token limit on every
-  request; provider continuation does not replace request-level configuration.
+  request.
 - Persist/forward assistant tool calls, execute all calls sequentially, append matching tool results, and continue.
 - Return only a response with no tool calls and non-empty visible text as `completed`.
 - Detect empty/unsupported responses as `LLMProtocolError`.
@@ -36,13 +41,14 @@ Implement the required LLM/tool feedback cycle with explicit termination and no 
 
 - Script fake responses for direct answer, one tool, two sequential tool rounds, multiple calls in one round, invalid arguments, execution failure, and endless tool calls.
 - Assert exact call IDs and results appear in the next fake-LLM request.
-- Add an adapter protocol test proving a Responses API function call and its function-call output retain the same `call_id`.
+- Add an adapter protocol test proving a Chat Completions tool call and matching
+  tool result retain the same `tool_call_id`.
 
 ## Acceptance criteria
 
 - The complete required loop works without a framework.
 - A tool error returns to the LLM and can be repaired on the next round.
 - The runtime cannot exceed configured LLM decision rounds.
-- Continuation requests do not duplicate the user message or prior local history.
+- Each subsequent active-run request replays one coherent bounded message sequence.
 - No branch selects a tool based on user text.
-- The only real provider/API path is OpenAI Responses API, and tool-call/result correlation is lossless.
+- The only real provider/API path is DeepSeek Chat Completions, and tool-call/result correlation is lossless.

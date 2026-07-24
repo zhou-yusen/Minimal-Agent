@@ -199,10 +199,16 @@ async def test_two_sequential_tool_rounds_are_three_llm_steps() -> None:
 
     assert result.loop_steps == 3
     assert len(fake.requests) == 3
-    assert [request.continuation_id for request in fake.requests] == [
-        None,
-        "resp-1",
-        "resp-2",
+    assert [[message.role for message in request.messages] for request in fake.requests] == [
+        [MessageRole.USER],
+        [MessageRole.USER, MessageRole.ASSISTANT, MessageRole.TOOL],
+        [
+            MessageRole.USER,
+            MessageRole.ASSISTANT,
+            MessageRole.TOOL,
+            MessageRole.ASSISTANT,
+            MessageRole.TOOL,
+        ],
     ]
     tool_names = [
         message.tool_name
@@ -233,11 +239,14 @@ async def test_multiple_tool_calls_execute_in_order_before_one_next_llm_call() -
     assert result.loop_steps == 2
     assert len(fake.requests) == 2
     next_messages = fake.requests[1].messages
-    assert [message.tool_call_id for message in next_messages] == [
+    tool_messages = [
+        message for message in next_messages if message.role is MessageRole.TOOL
+    ]
+    assert [message.tool_call_id for message in tool_messages] == [
         "call-a",
         "call-b",
     ]
-    assert [message.tool_name for message in next_messages] == [
+    assert [message.tool_name for message in tool_messages] == [
         "calculator",
         "search",
     ]
@@ -258,7 +267,7 @@ async def test_invalid_tool_json_is_returned_to_llm() -> None:
     result = await runtime(fake).run(session(), "Calculate")
 
     assert result.status is AgentRunStatus.COMPLETED
-    payload = decoded_tool_message(fake.requests[1].messages[0])
+    payload = decoded_tool_message(fake.requests[1].messages[-1])
     assert payload["ok"] is False
     assert payload["error"]["code"] == ToolErrorCode.INVALID_JSON
     assert "latency_ms" not in payload
@@ -278,7 +287,7 @@ async def test_unknown_tool_error_is_returned_to_llm() -> None:
 
     await runtime(fake).run(session(), "Use a missing tool")
 
-    payload = decoded_tool_message(fake.requests[1].messages[0])
+    payload = decoded_tool_message(fake.requests[1].messages[-1])
     assert payload["error"]["code"] == ToolErrorCode.UNKNOWN_TOOL
 
 
@@ -298,7 +307,7 @@ async def test_tool_execution_exception_is_redacted_and_returned_to_llm() -> Non
 
     await runtime(fake, registry=registry).run(session(), "Run it")
 
-    payload = decoded_tool_message(fake.requests[1].messages[0])
+    payload = decoded_tool_message(fake.requests[1].messages[-1])
     assert payload["error"] == {
         "code": ToolErrorCode.EXECUTION_ERROR,
         "message": "tool execution failed",
@@ -325,8 +334,8 @@ async def test_llm_can_repair_invalid_arguments_on_next_round() -> None:
     result = await runtime(fake).run(session(), "Calculate eight divided by two")
 
     assert result.loop_steps == 3
-    first_error = decoded_tool_message(fake.requests[1].messages[0])
-    repaired = decoded_tool_message(fake.requests[2].messages[0])
+    first_error = decoded_tool_message(fake.requests[1].messages[-1])
+    repaired = decoded_tool_message(fake.requests[2].messages[-1])
     assert first_error["error"]["code"] == ToolErrorCode.VALIDATION_ERROR
     assert repaired == {
         "ok": True,
@@ -361,29 +370,26 @@ async def test_max_steps_executes_last_calls_then_stops_without_extra_llm_call(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("response_id", [None, "", "   "])
-async def test_tool_calls_without_provider_response_id_fail_before_execution(
-    response_id: str | None,
-) -> None:
+async def test_tool_calls_do_not_require_provider_response_id() -> None:
     fake = ScriptedFakeLLM(
         [
             tool_result(
-                call("todo", '{"action":"add","text":"Must not run"}', "call-1"),
-                response_id=response_id,
-            )
+                call("todo", '{"action":"add","text":"Must run"}', "call-1"),
+                response_id=None,
+            ),
+            final_result("Added"),
         ]
     )
     state = session()
 
-    with pytest.raises(LLMProtocolError, match="provider_response_id"):
-        await runtime(fake).run(state, "Add a todo")
+    result = await runtime(fake).run(state, "Add a todo")
 
-    assert state.tool_state == {}
-    assert [message.role for message in state.history] == [MessageRole.USER]
+    assert result.status is AgentRunStatus.COMPLETED
+    assert state.tool_state["todo"]["items"][0]["text"] == "Must run"
 
 
 @pytest.mark.asyncio
-async def test_continuation_sends_only_new_tool_results_with_request_config() -> None:
+async def test_active_run_replays_bounded_context_call_and_result() -> None:
     fake = ScriptedFakeLLM(
         [
             tool_result(
@@ -405,23 +411,27 @@ async def test_continuation_sends_only_new_tool_results_with_request_config() ->
     await runtime(fake).run(state, "Current question")
 
     first, second = fake.requests
-    assert first.continuation_id is None
     assert [message.content for message in first.messages] == [
         "Earlier question",
         "Earlier answer",
         "Current question",
     ]
-    assert second.continuation_id == "resp-1"
-    assert len(second.messages) == 1
-    assert second.messages[0].role is MessageRole.TOOL
-    assert all(message.role is not MessageRole.USER for message in second.messages)
+    assert [message.role for message in second.messages] == [
+        MessageRole.USER,
+        MessageRole.ASSISTANT,
+        MessageRole.USER,
+        MessageRole.ASSISTANT,
+        MessageRole.TOOL,
+    ]
+    assert second.messages[-2].tool_calls[0].id == "call-1"
+    assert second.messages[-1].tool_call_id == "call-1"
     assert first.system_prompt == second.system_prompt == SYSTEM_PROMPT
     assert first.tools == second.tools == expected_definitions
     assert first.max_output_tokens == second.max_output_tokens == MAX_OUTPUT_TOKENS
 
 
 @pytest.mark.asyncio
-async def test_continuation_chain_uses_the_immediately_previous_response_id() -> None:
+async def test_two_tool_rounds_replay_the_complete_active_sequence() -> None:
     fake = ScriptedFakeLLM(
         [
             tool_result(
@@ -438,10 +448,12 @@ async def test_continuation_chain_uses_the_immediately_previous_response_id() ->
 
     await runtime(fake).run(session(), "Two calculations")
 
-    assert [request.continuation_id for request in fake.requests] == [
-        None,
-        "resp-1",
-        "resp-2",
+    assert [message.role for message in fake.requests[2].messages] == [
+        MessageRole.USER,
+        MessageRole.ASSISTANT,
+        MessageRole.TOOL,
+        MessageRole.ASSISTANT,
+        MessageRole.TOOL,
     ]
 
 

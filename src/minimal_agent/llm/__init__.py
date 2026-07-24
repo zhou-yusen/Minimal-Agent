@@ -1,5 +1,5 @@
 """LLM provider adapters."""
 
-from minimal_agent.llm.openai_client import OpenAIResponsesClient
+from minimal_agent.llm.deepseek_client import DeepSeekChatClient
 
-__all__ = ["OpenAIResponsesClient"]
+__all__ = ["DeepSeekChatClient"]

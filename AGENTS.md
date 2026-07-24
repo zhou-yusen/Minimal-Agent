@@ -25,14 +25,14 @@ The implementation must use a real LLM API in normal operation. Tests may inject
 The canonical architecture is `docs/architecture.md`. Unless a concrete test or provider limitation proves it inadequate, preserve these boundaries:
 
 - `AgentRuntime`: owns the bounded LLM/tool loop.
-- `LLMClient`: adapts the official provider SDK to provider-neutral runtime objects.
+- `LLMClient`: adapts DeepSeek Chat Completions to provider-neutral runtime objects.
 - `ToolRegistry`: exposes schemas and dispatches validated calls.
 - `SessionStore`: loads and atomically saves `SessionState`; SQLite is the first implementation.
 - `ContextManager`: selects the system prompt, summary, and recent complete turns; it triggers compression.
 - `TraceSink`: receives structured `TraceEvent` records.
 - Thin API/CLI adapters call the same runtime and contain no agent logic.
 
-The first provider adapter will use the official OpenAI Python SDK. Provider-specific response parsing stays inside that adapter.
+The only v1 provider adapter uses the OpenAI Python SDK against DeepSeek at `https://api.deepseek.com`, with model `deepseek-v4-flash`, thinking disabled, and SDK retries disabled. Provider-specific request/response mapping stays inside that adapter.
 
 ## Working method
 
@@ -62,6 +62,7 @@ If an earlier design is wrong, explain the evidence first and make the smallest 
 - Preserve complete tool-call/tool-result pairs when choosing recent context.
 - Treat one `loop_step` as one LLM decision round. Multiple tool calls returned in one response share that step.
 - If a response contains one or more tool calls, execute them and continue the loop. It is final only when it contains no tool calls and has visible answer text.
+- Within one active run, every Chat Completion replays the bounded initial context plus all assistant tool-call and tool-result messages produced so far. Do not introduce provider continuation IDs or send only the newest tool result.
 - On maximum-step exhaustion, return and persist a controlled terminal result with status `max_steps`; do not silently make another LLM call.
 
 ## Testing rules

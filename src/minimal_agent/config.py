@@ -15,8 +15,9 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    openai_api_key: SecretStr | None = None
-    openai_model: str = "gpt-5-mini"
+    deepseek_api_key: SecretStr | None = None
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_base_url: str = "https://api.deepseek.com"
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     max_loop_steps: int = Field(default=6, ge=1, le=50)
 
@@ -28,8 +29,9 @@ class Settings(BaseModel):
     recent_turns_to_keep: int = Field(default=4, ge=1, le=50)
 
     _ENV_TO_FIELD: ClassVar[dict[str, str]] = {
-        "OPENAI_API_KEY": "openai_api_key",
-        "OPENAI_MODEL": "openai_model",
+        "DEEPSEEK_API_KEY": "deepseek_api_key",
+        "DEEPSEEK_MODEL": "deepseek_model",
+        "DEEPSEEK_BASE_URL": "deepseek_base_url",
         "LLM_TIMEOUT_SECONDS": "llm_timeout_seconds",
         "MAX_LOOP_STEPS": "max_loop_steps",
         "SESSION_DATABASE_PATH": "session_database_path",

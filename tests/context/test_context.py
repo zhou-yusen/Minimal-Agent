@@ -454,7 +454,7 @@ class CountingContextManager:
 
 
 @pytest.mark.asyncio
-async def test_runtime_builds_context_once_then_uses_tool_only_continuations(
+async def test_runtime_builds_context_once_then_replays_active_run_messages(
 ) -> None:
     calls = [
         ToolCall(
@@ -505,15 +505,16 @@ async def test_runtime_builds_context_once_then_uses_tool_only_continuations(
     await runtime.run(state, "Calculate twice")
 
     assert context_manager.calls == 1
-    assert [request.continuation_id for request in fake.requests] == [
-        None,
-        "resp-1",
-        "resp-2",
-    ]
     assert [message.role for message in fake.requests[1].messages] == [
+        MessageRole.USER,
+        MessageRole.ASSISTANT,
         MessageRole.TOOL
     ]
     assert [message.role for message in fake.requests[2].messages] == [
+        MessageRole.USER,
+        MessageRole.ASSISTANT,
+        MessageRole.TOOL,
+        MessageRole.ASSISTANT,
         MessageRole.TOOL
     ]
 

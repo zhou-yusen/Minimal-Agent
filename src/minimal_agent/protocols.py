@@ -17,7 +17,7 @@ from minimal_agent.models import (
 
 
 class LLMClient(Protocol):
-    """Replaceable so offline tests do not call the real Responses API."""
+    """Replaceable so offline tests do not call the real provider API."""
 
     async def complete(self, request: LLMRequest) -> LLMResult: ...
 

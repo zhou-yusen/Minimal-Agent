@@ -167,7 +167,6 @@ class AgentRuntime:
                     )
                 )
             request_messages = context_result.messages
-            continuation_id: str | None = None
             tool_context = ToolContext(
                 user_id=session.user_id,
                 session_id=session.session_id,
@@ -180,7 +179,6 @@ class AgentRuntime:
                     messages=request_messages,
                     tools=tool_definitions,
                     max_output_tokens=self._max_output_tokens,
-                    continuation_id=continuation_id,
                 )
                 await self._emit_trace(
                     TraceEvent(
@@ -189,7 +187,6 @@ class AgentRuntime:
                         session_id=session.session_id,
                         turn_id=turn_id,
                         loop_step=loop_step,
-                        continuation_present=continuation_id is not None,
                         message_count=len(request.messages),
                         message_roles=[message.role for message in request.messages],
                         tool_names=[tool.name for tool in request.tools],
@@ -251,15 +248,6 @@ class AgentRuntime:
                         "unsupported normalized LLM response: "
                         f"{result.response_type}"
                     )
-                if (
-                    not result.provider_response_id
-                    or not result.provider_response_id.strip()
-                ):
-                    raise LLMProtocolError(
-                        "tool-call response requires a non-empty "
-                        "provider_response_id"
-                    )
-
                 self._append(session, result.assistant_message)
                 tool_messages: list[ConversationMessage] = []
                 for call in result.assistant_message.tool_calls:
@@ -297,8 +285,11 @@ class AgentRuntime:
 
                 stage = "tool_checkpoint"
                 await self._checkpoint(session, checkpoint)
-                continuation_id = result.provider_response_id
-                request_messages = tool_messages
+                request_messages = [
+                    *request_messages,
+                    result.assistant_message,
+                    *tool_messages,
+                ]
 
             terminal_message = ConversationMessage(
                 role=MessageRole.ASSISTANT,

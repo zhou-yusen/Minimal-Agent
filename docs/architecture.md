@@ -1,6 +1,6 @@
 # Phase 1 — Requirements and Frozen Architecture
 
-Status: **Frozen v1**
+Status: **Frozen v1, Provider Revision A**
 Date: 2026-07-24
 
 System and runtime flow diagrams: [`docs/diagrams.md`](diagrams.md).
@@ -94,7 +94,7 @@ HTTP / CLI adapter
 
 | Boundary | V1 implementation | Reason it exists |
 |---|---|---|
-| `LLMClient` | OpenAI Responses API via the official Python SDK | Deterministic tests and normalization of the one provider protocol used by this project |
+| `LLMClient` | DeepSeek Chat Completions via the OpenAI Python SDK | Deterministic tests and normalization of the one provider protocol used by this project |
 | `SessionStore` | SQLite JSON store | Session isolation, recovery, and future storage replacement |
 | `SearchBackend` | Deterministic mock corpus | Search is allowed to be mocked and stays testable |
 | `TraceSink` | Structured Python logger | Tests capture events without scraping log text |
@@ -160,9 +160,20 @@ LLMResult
   provider_response_id: str | None
 ```
 
-`LLMRequest` also has `continuation_id: str | None`. It is transient state for consecutive LLM calls inside one active Agent run and maps to Responses API `previous_response_id`; it is not part of `SessionState` and is discarded when the run ends.
+`LLMRequest` contains no provider continuation state. DeepSeek's OpenAI-compatible
+Chat Completions protocol requires message replay: the first request uses bounded
+context from `ContextManager`, and each subsequent request in the same active run
+replays that context plus every normalized assistant tool-call and tool-result
+message produced so far.
 
-The Phase 4 adapter supports only the OpenAI Responses API; it is not a universal OpenAI/Claude/Gemini adapter. `ToolCall.id` stores the Responses API function call `call_id`, and every corresponding function-call output must send that same value back. Within an active run, the next request uses the prior `LLMResult.provider_response_id` as `continuation_id`, allowing the provider to preserve reasoning continuity without storing or replaying reasoning content locally. The adapter may inspect provider reasoning items, but the domain stores only `reasoning_present`. Hidden reasoning text and raw provider responses are neither required nor persisted.
+The only v1 adapter is `DeepSeekChatClient`; this is not a universal provider
+registry. It uses `deepseek-v4-flash` at `https://api.deepseek.com`, maps the
+provider-neutral output reserve to `max_tokens`, and sends thinking disabled on
+completion and summary calls. `ToolCall.id` preserves the provider call ID and the
+matching role=`tool` message returns the same ID. Raw DeepSeek messages and
+`reasoning_content` are never persisted. Thinking remains disabled because
+thinking plus tools would require replaying reasoning content, which conflicts
+with the project's private-reasoning contract.
 
 ### Tools
 
@@ -256,7 +267,7 @@ MVP agent/
 │   ├── service.py                    # thin lifecycle facade
 │   ├── llm/
 │   │   ├── base.py
-│   │   └── openai_client.py
+│   │   └── deepseek_client.py
 │   ├── tools/
 │   │   ├── base.py
 │   │   ├── registry.py
@@ -301,7 +312,7 @@ Do not create empty abstraction modules pre-emptively. The tree is the target sh
 - Browser/web search infrastructure; the v1 search backend is deterministic and mocked.
 - A universal expression language or arbitrary Python execution in calculator.
 - A generic plugin marketplace, dynamic code loading, or remote tools.
-- Event sourcing, full replay, elaborate checkpointing, or normalized message tables before a concrete need.
+- Event sourcing, unbounded full-history replay, elaborate checkpointing, or normalized message tables before a concrete need.
 - Streaming, parallel tool execution, retries with complex backoff, or same-session concurrent-write guarantees in v1.
 - Storage or display of private model chain-of-thought.
 
@@ -319,4 +330,4 @@ Do not create empty abstraction modules pre-emptively. The tree is the target sh
 
 ## Architecture freeze v1
 
-The frozen implementation is a single async Python application whose concrete `AgentRuntime` orchestrates normalized LLM decisions, a schema-driven `ToolRegistry`, SQLite-backed composite-key sessions, full-request-budgeted summary-plus-recent-turn context, and structured tracing. The only real provider implementation is the OpenAI Responses API through the official Python SDK; fake implementations exist only at explicit test seams. State is saved as one JSON session document, tools execute sequentially, one loop step equals one LLM decision, and maximum-step exhaustion returns a controlled terminal result. No additional architectural layer should be introduced without evidence that one of the required acceptance tests cannot be met cleanly.
+The frozen implementation is a single async Python application whose concrete `AgentRuntime` orchestrates normalized LLM decisions, a schema-driven `ToolRegistry`, SQLite-backed composite-key sessions, full-request-budgeted summary-plus-recent-turn context, and structured tracing. The only real provider implementation is DeepSeek V4 Flash through OpenAI-compatible Chat Completions; active tool runs use full normalized message replay with thinking disabled. Fake implementations exist only at explicit test seams. State is saved as one JSON session document, tools execute sequentially, one loop step equals one LLM decision, and maximum-step exhaustion returns a controlled terminal result. No additional architectural layer should be introduced without evidence that one of the required acceptance tests cannot be met cleanly.

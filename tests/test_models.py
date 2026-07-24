@@ -44,20 +44,18 @@ def test_completion_request_carries_tools_and_response_reserve() -> None:
 
     assert request.tools[0].name == "calculator"
     assert request.max_output_tokens == 1_000
-    assert request.continuation_id is None
 
 
-def test_continuation_id_is_request_only_not_session_state() -> None:
+def test_provider_state_is_not_part_of_request_or_session() -> None:
     request = LLMRequest(
         system_prompt="Continue the active run.",
         messages=[ConversationMessage(role=MessageRole.USER, content="Continue")],
         tools=[],
         max_output_tokens=100,
-        continuation_id="resp-123",
     )
     session = SessionState(user_id="user-1", session_id="session-1")
 
-    assert request.continuation_id == "resp-123"
+    assert "continuation_id" not in request.model_dump()
     assert "continuation_id" not in session.model_dump()
     assert "provider_response_id" not in session.model_dump()
 

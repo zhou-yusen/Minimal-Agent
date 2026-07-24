@@ -144,7 +144,6 @@ async def test_tool_batch_stale_turn_is_sealed_without_replaying_tool() -> None:
     await make_runtime(fake).run(session, "New request")
 
     assert len(fake.requests) == 1
-    assert fake.requests[0].continuation_id is None
     assert [message.role for message in fake.requests[0].messages] == [
         MessageRole.ASSISTANT,
         MessageRole.USER,

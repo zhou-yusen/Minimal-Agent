@@ -408,3 +408,49 @@ general API exceptions. They verify stable messages, status/request correlation,
 private-body redaction, and `max_retries=0`. Runtime tests reload SQLite after user
 and tool-batch failures, seal the interrupted turn, preserve Todo state, and prove
 the old tool result appears exactly once.
+
+## 2026-07-24 - Phase 7A: freeze DeepSeek Chat Completions as the V1 provider
+
+### Problem
+
+The final V1 provider changed from OpenAI Responses to DeepSeek. The existing
+active-run protocol depended on `previous_response_id`, which is not part of the
+selected DeepSeek Chat Completions contract.
+
+### Analysis
+
+Provider selection changes request serialization and active-run continuation, but
+does not require changing the provider-neutral runtime, tools, sessions, context,
+checkpoint, recovery, or trace boundaries. DeepSeek's compatible endpoint can use
+the already installed OpenAI Python SDK. With thinking disabled, no reasoning item
+storage or provider-state abstraction is justified.
+
+### Options
+
+1. Keep both adapters behind a provider registry.
+2. Build a new DeepSeek-specific SDK abstraction and preserve continuation state.
+3. Keep one DeepSeek Chat Completions adapter, remove Responses-only continuation
+   state, and replay the complete bounded active-run message sequence.
+
+### Decision
+
+Use option 3. V1 now supports only `deepseek-v4-flash` at
+`https://api.deepseek.com`, configured through `AsyncOpenAI` with
+`max_retries=0`. Both completion and summarization explicitly disable thinking;
+summarization omits tools. Every active tool round replays the bounded context plus
+all new assistant tool calls and matched tool results. Historical log entries above
+describe the then-current Responses implementation and are superseded by this
+decision where provider behavior differs.
+
+### AI Assistance
+
+AI isolated the provider-specific state, implemented and tested Chat Completions
+message/schema/result mapping, and updated runtime replay without altering durable
+session or tool semantics.
+
+### Verification
+
+Offline adapter tests use real OpenAI SDK ChatCompletion and exception model
+classes while faking only `chat.completions.create`. Runtime tests verify complete
+message replay, ordered multi-tool batches, exact `tool_call_id` correlation,
+thinking privacy, no hidden SDK retries, and provider-neutral error mapping.

@@ -21,7 +21,7 @@ class LLMProviderError(MinimalAgentError):
 
     def __init__(
         self,
-        message: str = "OpenAI provider request failed",
+        message: str = "LLM provider request failed",
         *,
         status_code: int | None = None,
         request_id: str | None = None,
@@ -33,12 +33,12 @@ class LLMProviderError(MinimalAgentError):
 
 class LLMTimeoutError(LLMProviderError):
     def __init__(self) -> None:
-        super().__init__("OpenAI request timed out")
+        super().__init__("LLM provider request timed out")
 
 
 class LLMConnectionError(LLMProviderError):
     def __init__(self) -> None:
-        super().__init__("OpenAI connection failed")
+        super().__init__("LLM provider connection failed")
 
 
 class LLMRateLimitError(LLMProviderError):
@@ -49,7 +49,7 @@ class LLMRateLimitError(LLMProviderError):
         request_id: str | None = None,
     ) -> None:
         super().__init__(
-            "OpenAI rate limit exceeded",
+            "LLM provider rate limit exceeded",
             status_code=status_code,
             request_id=request_id,
         )

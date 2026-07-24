@@ -20,7 +20,7 @@ Make every agent run diagnosable and ensure boundary failures have predictable b
 - `AgentRuntime` optionally emits correlated `TraceEvent` records for run, context
   compression, LLM, tool, error, and finish boundaries.
 - LLM request events contain only structural metadata: counts, roles, tool names,
-  output limit, and continuation presence. They exclude prompt and message text.
+  and output limit. They exclude prompt and message text.
 - `ContextManager.build()` returns a provider-neutral `ContextBuildResult` so the
   runtime can correlate successful or fallback compression without injecting a
   trace dependency into context selection.
@@ -31,8 +31,9 @@ Make every agent run diagnosable and ensure boundary failures have predictable b
 
 ## Phase 6B provider failures and interrupted turns completed
 
-- The OpenAI SDK is constructed with `max_retries=0`; one adapter call is one
-  provider attempt. No application retry has been added.
+- The OpenAI Python SDK client used for DeepSeek is constructed with
+  `max_retries=0`; one adapter call is one provider attempt. No application retry
+  has been added.
 - SDK timeout, connection, rate-limit, status, and general API failures map to
   stable safe domain errors. Only status code and request ID may cross the adapter
   boundary; provider bodies, headers, and raw exception text do not.
