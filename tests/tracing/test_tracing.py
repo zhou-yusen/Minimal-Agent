@@ -1,10 +1,20 @@
 import json
 import logging
 
+import httpx
 import pytest
+from openai import InternalServerError
 
+from minimal_agent.config import Settings
 from minimal_agent.context import ContextManager
-from minimal_agent.errors import LLMProtocolError, SessionStoreError
+from minimal_agent.errors import (
+    LLMConnectionError,
+    LLMProtocolError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    SessionStoreError,
+)
 from minimal_agent.models import (
     AgentRunStatus,
     ConversationMessage,
@@ -16,6 +26,7 @@ from minimal_agent.models import (
     TraceEvent,
     TraceEventType,
 )
+from minimal_agent.llm.openai_client import OpenAIResponsesClient
 from minimal_agent.runtime import AgentRuntime
 from minimal_agent.tools.calculator import CalculatorTool
 from minimal_agent.tools.registry import ToolRegistry
@@ -396,7 +407,7 @@ async def test_checkpoint_failures_emit_safe_error_event(
     assert error.event_type is TraceEventType.ERROR
     assert error.error == {
         "type": "SessionStoreError",
-        "code": "SessionStoreError",
+        "code": "session_store",
         "stage": expected_stage,
         "message": "agent operation failed",
     }
@@ -415,6 +426,111 @@ async def test_llm_protocol_error_is_traced_then_propagated() -> None:
     assert event_types(sink)[-2:] == [TraceEventType.LLM_RESPONSE, TraceEventType.ERROR]
     assert sink.events[-1].error["type"] == "LLMProtocolError"
     assert sink.events[-1].error["stage"] == "llm_protocol"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("domain_error", "expected_code"),
+    [
+        (LLMTimeoutError(), "llm_timeout"),
+        (LLMConnectionError(), "llm_connection"),
+        (
+            LLMRateLimitError(status_code=429, request_id="req-rate"),
+            "llm_rate_limit",
+        ),
+        (
+            LLMProviderError(status_code=500, request_id="req-provider"),
+            "llm_provider",
+        ),
+    ],
+)
+async def test_provider_errors_use_stable_safe_trace_codes(
+    domain_error: LLMProviderError,
+    expected_code: str,
+) -> None:
+    sink = InMemoryTraceSink()
+
+    with pytest.raises(type(domain_error)):
+        await make_runtime(ScriptedFakeLLM([domain_error]), sink).run(
+            state(), "Run"
+        )
+
+    error = sink.events[-1].error
+    assert error["code"] == expected_code
+    assert error.get("status_code") == domain_error.status_code
+    assert error.get("request_id") == domain_error.request_id
+
+
+@pytest.mark.asyncio
+async def test_sdk_provider_body_never_reaches_serialized_trace() -> None:
+    private = "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK"
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    response = httpx.Response(
+        500,
+        request=request,
+        headers={"x-request-id": "req-safe"},
+        json={"error": {"message": private}},
+    )
+    sdk_error = InternalServerError(
+        private,
+        response=response,
+        body={"private": private},
+    )
+
+    class ErrorResponses:
+        async def create(self, **kwargs):
+            del kwargs
+            raise sdk_error
+
+    class ErrorSDK:
+        responses = ErrorResponses()
+
+    adapter = OpenAIResponsesClient(
+        Settings(openai_model="gpt-5-mini"),
+        client=ErrorSDK(),  # type: ignore[arg-type]
+    )
+    sink = InMemoryTraceSink()
+
+    with pytest.raises(LLMProviderError):
+        await make_runtime(adapter, sink).run(  # type: ignore[arg-type]
+            state(), "Run"
+        )
+
+    serialized = json.dumps(
+        [event.model_dump(mode="json") for event in sink.events]
+    )
+    assert private not in serialized
+    assert sink.events[-1].error["code"] == "llm_provider"
+    assert sink.events[-1].error["status_code"] == 500
+    assert sink.events[-1].error["request_id"] == "req-safe"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+async def test_nonstandard_json_tool_args_trace_as_invalid(
+    constant: str,
+) -> None:
+    sink = InMemoryTraceSink()
+    fake = ScriptedFakeLLM(
+        [
+            tool_calls(
+                "resp-1",
+                call("c1", "calculator", f'{{"expression":{constant}}}'),
+            ),
+            final(),
+        ]
+    )
+
+    await make_runtime(fake, sink).run(state(), "Calculate")
+
+    start = next(
+        event for event in sink.events if event.event_type is TraceEventType.TOOL_START
+    )
+    result = next(
+        event for event in sink.events if event.event_type is TraceEventType.TOOL_RESULT
+    )
+    assert start.tool_args == {"parse_status": "invalid_json"}
+    assert result.tool_result["error"]["code"] == "invalid_json"
 
 
 class ExplodingTraceSink:

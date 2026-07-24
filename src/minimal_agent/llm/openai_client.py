@@ -5,11 +5,24 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from openai import APITimeoutError, AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    RateLimitError,
+)
 from openai.types.responses import Response
 
 from minimal_agent.config import Settings
-from minimal_agent.errors import LLMProtocolError, LLMTimeoutError
+from minimal_agent.errors import (
+    LLMConnectionError,
+    LLMProtocolError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+)
 from minimal_agent.models import (
     ConversationMessage,
     LLMRequest,
@@ -48,6 +61,7 @@ class OpenAIResponsesClient:
         self._client = AsyncOpenAI(
             api_key=settings.openai_api_key.get_secret_value(),
             timeout=settings.llm_timeout_seconds,
+            max_retries=0,
         )
 
     async def complete(self, request: LLMRequest) -> LLMResult:
@@ -107,7 +121,21 @@ class OpenAIResponsesClient:
         try:
             return await self._client.responses.create(**create_args)
         except APITimeoutError as exc:
-            raise LLMTimeoutError("OpenAI Responses API request timed out") from exc
+            raise LLMTimeoutError() from exc
+        except APIConnectionError as exc:
+            raise LLMConnectionError() from exc
+        except RateLimitError as exc:
+            raise LLMRateLimitError(
+                status_code=exc.status_code,
+                request_id=exc.request_id,
+            ) from exc
+        except APIStatusError as exc:
+            raise LLMProviderError(
+                status_code=exc.status_code,
+                request_id=exc.request_id,
+            ) from exc
+        except APIError as exc:
+            raise LLMProviderError() from exc
 
     @staticmethod
     def _tools_to_openai(tools: list[ToolDefinition]) -> list[dict[str, Any]]:

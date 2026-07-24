@@ -3,6 +3,15 @@ from collections.abc import Iterable
 from typing import Any
 
 import pytest
+import httpx
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    BadRequestError,
+    InternalServerError,
+    RateLimitError,
+)
 from openai.types.responses import (
     Response,
     ResponseFunctionToolCall,
@@ -13,7 +22,13 @@ from openai.types.responses import (
 )
 
 from minimal_agent.config import Settings
-from minimal_agent.errors import LLMProtocolError
+from minimal_agent.errors import (
+    LLMConnectionError,
+    LLMProtocolError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+)
 from minimal_agent.llm.openai_client import OpenAIResponsesClient
 from minimal_agent.models import (
     ConversationMessage,
@@ -28,7 +43,7 @@ from minimal_agent.models import (
 
 
 class FakeResponsesBoundary:
-    def __init__(self, responses: Iterable[Response]) -> None:
+    def __init__(self, responses: Iterable[Response | Exception]) -> None:
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
@@ -36,11 +51,14 @@ class FakeResponsesBoundary:
         self.calls.append(kwargs)
         if not self._responses:
             raise AssertionError("no fake SDK response remains")
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class FakeAsyncOpenAI:
-    def __init__(self, responses: Iterable[Response]) -> None:
+    def __init__(self, responses: Iterable[Response | Exception]) -> None:
         self.responses = FakeResponsesBoundary(responses)
 
 
@@ -114,7 +132,9 @@ def sdk_response(
     )
 
 
-def make_client(*responses: Response) -> tuple[OpenAIResponsesClient, FakeAsyncOpenAI]:
+def make_client(
+    *responses: Response | Exception,
+) -> tuple[OpenAIResponsesClient, FakeAsyncOpenAI]:
     sdk = FakeAsyncOpenAI(responses)
     client = OpenAIResponsesClient(
         Settings(openai_model="gpt-5-mini"),
@@ -354,3 +374,119 @@ async def test_summary_rejects_empty_visible_text() -> None:
 
     with pytest.raises(LLMProtocolError, match="must contain visible text"):
         await client.summarize(request)
+
+
+def sdk_request() -> httpx.Request:
+    return httpx.Request("POST", "https://api.openai.com/v1/responses")
+
+
+def status_response(status_code: int, request_id: str) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        request=sdk_request(),
+        headers={"x-request-id": request_id},
+        json={"error": {"message": "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK"}},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sdk_error", "domain_type", "safe_message", "status_code", "request_id"),
+    [
+        (
+            APITimeoutError(sdk_request()),
+            LLMTimeoutError,
+            "OpenAI request timed out",
+            None,
+            None,
+        ),
+        (
+            APIConnectionError(
+                message="PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK",
+                request=sdk_request(),
+            ),
+            LLMConnectionError,
+            "OpenAI connection failed",
+            None,
+            None,
+        ),
+        (
+            RateLimitError(
+                "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK",
+                response=status_response(429, "req-rate"),
+                body={"private": "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK"},
+            ),
+            LLMRateLimitError,
+            "OpenAI rate limit exceeded",
+            429,
+            "req-rate",
+        ),
+        (
+            InternalServerError(
+                "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK",
+                response=status_response(500, "req-500"),
+                body={"private": "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK"},
+            ),
+            LLMProviderError,
+            "OpenAI provider request failed",
+            500,
+            "req-500",
+        ),
+        (
+            BadRequestError(
+                "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK",
+                response=status_response(400, "req-400"),
+                body={"private": "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK"},
+            ),
+            LLMProviderError,
+            "OpenAI provider request failed",
+            400,
+            "req-400",
+        ),
+        (
+            APIError(
+                "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK",
+                sdk_request(),
+                body={"private": "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK"},
+            ),
+            LLMProviderError,
+            "OpenAI provider request failed",
+            None,
+            None,
+        ),
+    ],
+)
+async def test_sdk_errors_map_to_safe_domain_errors(
+    sdk_error: Exception,
+    domain_type: type[LLMProviderError],
+    safe_message: str,
+    status_code: int | None,
+    request_id: str | None,
+) -> None:
+    client, _ = make_client(sdk_error)
+
+    with pytest.raises(domain_type) as captured:
+        await client.complete(completion_request())
+
+    error = captured.value
+    assert str(error) == safe_message
+    assert error.status_code == status_code
+    assert error.request_id == request_id
+    assert "PROVIDER_PRIVATE_BODY_MUST_NOT_LEAK" not in str(error)
+
+
+def test_sdk_client_disables_implicit_retries(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class CapturingAsyncOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "minimal_agent.llm.openai_client.AsyncOpenAI",
+        CapturingAsyncOpenAI,
+    )
+
+    OpenAIResponsesClient(Settings(openai_api_key="test-key"))
+
+    assert captured["max_retries"] == 0

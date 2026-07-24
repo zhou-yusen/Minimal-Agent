@@ -9,7 +9,18 @@ from typing import Any
 from uuid import uuid4
 
 from minimal_agent.context import ContextManager
-from minimal_agent.errors import LLMProtocolError
+from minimal_agent.errors import (
+    ContextCompressionError,
+    ContextWindowExceededError,
+    LLMConnectionError,
+    LLMProtocolError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    MinimalAgentError,
+    SessionNotFoundError,
+    SessionStoreError,
+)
 from minimal_agent.models import (
     AgentRunResult,
     AgentRunStatus,
@@ -35,6 +46,9 @@ class AgentRuntime:
 
     MAX_STEPS_MESSAGE = (
         "The agent stopped because it reached the maximum number of decision steps."
+    )
+    INTERRUPTED_TURN_MESSAGE = (
+        "The previous agent turn was interrupted before a final answer."
     )
 
     def __init__(
@@ -85,6 +99,31 @@ class AgentRuntime:
         )
 
         try:
+            interrupted_start: int | None = None
+            if self._has_trailing_incomplete_turn(session):
+                interrupted_start = self._trailing_turn_start(session)
+                previous_role = session.history[-1].role
+                self._append(
+                    session,
+                    ConversationMessage(
+                        role=MessageRole.ASSISTANT,
+                        content=self.INTERRUPTED_TURN_MESSAGE,
+                    ),
+                )
+                await self._emit_trace(
+                    TraceEvent(
+                        event_type=TraceEventType.RECOVERY,
+                        user_id=session.user_id,
+                        session_id=session.session_id,
+                        turn_id=turn_id,
+                        recovery_kind="interrupted_turn",
+                        previous_terminal_role=previous_role,
+                        previous_terminal_state="non_terminal",
+                    )
+                )
+                stage = "recovery_checkpoint"
+                await self._checkpoint(session, checkpoint)
+
             self._append(
                 session,
                 ConversationMessage(role=MessageRole.USER, content=user_message),
@@ -94,12 +133,25 @@ class AgentRuntime:
 
             tool_definitions = self._tools.definitions()
             stage = "context_build"
-            context_result = await self._context_manager.build(
+            context_session = self._context_session(
                 session,
+                interrupted_start=interrupted_start,
+            )
+            context_result = await self._context_manager.build(
+                context_session,
                 system_prompt=self._system_prompt,
                 tools=tool_definitions,
                 max_output_tokens=self._max_output_tokens,
             )
+            if context_session is not session:
+                session.summary = context_session.summary
+                session.summary_up_to_message_id = (
+                    context_session.summary_up_to_message_id
+                )
+                session.updated_at = max(
+                    session.updated_at,
+                    context_session.updated_at,
+                )
             if context_result.compression_attempted:
                 await self._emit_trace(
                     TraceEvent(
@@ -279,12 +331,7 @@ class AgentRuntime:
                     session_id=session.session_id,
                     turn_id=turn_id,
                     loop_step=loop_step,
-                    error={
-                        "type": type(exc).__name__,
-                        "code": type(exc).__name__,
-                        "stage": stage,
-                        "message": "agent operation failed",
-                    },
+                    error=self._safe_error(exc, stage),
                 )
             )
             raise
@@ -339,10 +386,86 @@ class AgentRuntime:
 
     @staticmethod
     def _safe_tool_args(arguments_json: str) -> Any:
+        def reject_constant(value: str) -> None:
+            raise ValueError(f"non-standard JSON constant: {value}")
+
         try:
-            return json.loads(arguments_json)
+            return json.loads(arguments_json, parse_constant=reject_constant)
         except (json.JSONDecodeError, ValueError):
             return {"parse_status": "invalid_json"}
+
+    @staticmethod
+    def _has_trailing_incomplete_turn(session: SessionState) -> bool:
+        if not session.history:
+            return False
+        last = session.history[-1]
+        return not (
+            last.role is MessageRole.ASSISTANT
+            and bool(last.content and last.content.strip())
+            and not last.tool_calls
+        )
+
+    @staticmethod
+    def _trailing_turn_start(session: SessionState) -> int:
+        for index in range(len(session.history) - 1, -1, -1):
+            if session.history[index].role is MessageRole.USER:
+                return index
+        return 0
+
+    @staticmethod
+    def _context_session(
+        session: SessionState,
+        *,
+        interrupted_start: int | None,
+    ) -> SessionState:
+        if interrupted_start is None:
+            return session
+        return session.model_copy(
+            update={
+                "history": [
+                    *session.history[:interrupted_start],
+                    *session.history[-2:],
+                ]
+            }
+        )
+
+    @staticmethod
+    def _safe_error(exc: Exception, stage: str) -> dict[str, Any]:
+        if isinstance(exc, LLMTimeoutError):
+            code = "llm_timeout"
+        elif isinstance(exc, LLMConnectionError):
+            code = "llm_connection"
+        elif isinstance(exc, LLMRateLimitError):
+            code = "llm_rate_limit"
+        elif isinstance(exc, LLMProviderError):
+            code = "llm_provider"
+        elif isinstance(exc, LLMProtocolError):
+            code = "llm_protocol"
+        elif isinstance(exc, ContextWindowExceededError):
+            code = "context_window_exceeded"
+        elif isinstance(exc, ContextCompressionError):
+            code = "context_compression"
+        elif isinstance(exc, SessionNotFoundError):
+            code = "session_not_found"
+        elif isinstance(exc, SessionStoreError):
+            code = "session_store"
+        elif isinstance(exc, MinimalAgentError):
+            code = "domain_error"
+        else:
+            code = "internal_error"
+
+        payload: dict[str, Any] = {
+            "type": type(exc).__name__,
+            "code": code,
+            "stage": stage,
+            "message": "agent operation failed",
+        }
+        if isinstance(exc, LLMProviderError):
+            if exc.status_code is not None:
+                payload["status_code"] = exc.status_code
+            if exc.request_id is not None:
+                payload["request_id"] = exc.request_id
+        return payload
 
     @staticmethod
     def _trace_tool_result(result: ToolResult) -> dict[str, Any]:

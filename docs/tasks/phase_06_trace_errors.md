@@ -12,7 +12,8 @@ Make every agent run diagnosable and ensure boundary failures have predictable b
 - Measure LLM/tool/run latency with a monotonic clock.
 - Sanitize LLM requests and error fields; never include API keys, headers, environment dumps, or stack traces in tool results.
 - Define and map `SessionNotFoundError`, `LLMTimeoutError`, `LLMProtocolError`, `SessionStoreError`, and context errors.
-- Configure provider timeout and at most one simple retry only if adapter evidence shows a transient timeout is safe; do not add a retry framework.
+- Keep provider retry disabled until Phase 7 real-API evidence justifies changing
+  the one-attempt contract; do not add a retry framework.
 
 ## Phase 6A observability completed
 
@@ -28,15 +29,25 @@ Make every agent run diagnosable and ensure boundary failures have predictable b
 - `InMemoryTraceSink` supports deterministic tests; `JsonLoggingTraceSink` writes
   one compact JSON event per stdlib logging record.
 
-## Deferred from Phase 5C
+## Phase 6B provider failures and interrupted turns completed
 
-- Resolve the failure-turn recovery question for a durably checkpointed user
-  message when context construction, the LLM, or the provider fails before the
-  next checkpoint. Do not delete the user message, synthesize an assistant
-  response, or retry until Phase 6 defines and tests the recovery contract.
+- The OpenAI SDK is constructed with `max_retries=0`; one adapter call is one
+  provider attempt. No application retry has been added.
+- SDK timeout, connection, rate-limit, status, and general API failures map to
+  stable safe domain errors. Only status code and request ID may cross the adapter
+  boundary; provider bodies, headers, and raw exception text do not.
+- A new run seals a trailing incomplete turn with a deterministic Runtime
+  assistant marker before accepting the new user message. The marker is
+  checkpointed first and old tool calls are never replayed.
+- Recovery emits one metadata-only event. Error traces use stable domain codes
+  instead of Python class names as business classifications.
+- Strict trace argument parsing now rejects NaN and infinities consistently with
+  `ToolRegistry`.
 
-Phase 6A makes compression fallback observable. Failure-turn recovery, provider
-exception normalization, and any evidence-based retry decision remain Phase 6B.
+Automatic retry remains disabled. A future external side-effect tool requires an
+explicit idempotency or transaction strategy: V1 does not roll back a tool whose
+subsequent local checkpoint fails, and does not add an outbox or distributed
+transaction framework.
 
 ## Key trade-offs
 
@@ -48,7 +59,7 @@ exception normalization, and any evidence-based retry decision remain Phase 6B.
 
 - Assert event order and required correlation fields for success, tool failure, timeout, compression failure, and max steps.
 - Assert secrets and private reasoning fixture text do not appear in serialized traces.
-- Verify the HTTP boundary maps known domain errors consistently.
+- Defer HTTP status mapping until an actual API adapter is introduced.
 
 ## Acceptance criteria
 

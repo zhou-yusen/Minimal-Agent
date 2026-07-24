@@ -8,7 +8,7 @@ class ScriptedFakeLLM:
 
     def __init__(
         self,
-        results: Iterable[LLMResult],
+        results: Iterable[LLMResult | Exception],
         *,
         summary_results: Iterable[str | Exception] = (),
     ) -> None:
@@ -21,7 +21,10 @@ class ScriptedFakeLLM:
         self.requests.append(request)
         if not self._results:
             raise AssertionError("ScriptedFakeLLM has no result left")
-        return self._results.pop(0)
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     async def summarize(self, request: SummaryRequest) -> str:
         self.summary_requests.append(request)

@@ -365,3 +365,46 @@ tool latency, max-step completion, tool failures, checkpoint and protocol errors
 compression success/fallback, JSON logging, and best-effort sink failure. Fixtures
 prove system API keys, full user messages, and private reasoning markers do not
 appear in serialized traces.
+
+## 2026-07-24 - Phase 6B: disable hidden retries and seal interrupted turns
+
+### Problem
+
+The application contained no retry loop, but the OpenAI SDK defaulted to two
+retries. Separately, a durable user or tool checkpoint followed by provider failure
+left a trailing incomplete turn that could accumulate across later requests.
+
+### Analysis
+
+Implicit SDK retry made one Runtime LLM step represent multiple network attempts,
+weakening timeout and side-effect reasoning. Replaying an interrupted turn was not
+safe because its tools may already have executed. Deleting it would discard durable
+evidence, while sealing it on the failure path would not survive a process crash.
+
+### Options
+
+1. Retry failed turns and replay their tool calls.
+2. Roll back or delete incomplete durable history.
+3. Disable SDK retries, preserve failed-turn evidence, and append a checkpointed
+   Runtime recovery marker at the start of the next user request.
+
+### Decision
+
+Use option 3. `max_retries=0` makes each adapter call one provider attempt. SDK
+exceptions map to stable safe domain errors. A following run detects a non-terminal
+history tail, checkpoints a deterministic marker, then accepts the new user. It
+never restores `previous_response_id` or re-executes old tools.
+
+### AI Assistance
+
+AI inspected the installed SDK's exception constructors and inheritance order,
+identified the hidden retry default, defined safe metadata boundaries, and designed
+SQLite crash-recovery and at-most-once Todo tests.
+
+### Verification
+
+Offline tests instantiate real OpenAI SDK timeout, connection, 429, 500, 400, and
+general API exceptions. They verify stable messages, status/request correlation,
+private-body redaction, and `max_retries=0`. Runtime tests reload SQLite after user
+and tool-batch failures, seal the interrupted turn, preserve Todo state, and prove
+the old tool result appears exactly once.

@@ -237,6 +237,7 @@ class AgentRunResult(BaseModel):
 
 class TraceEventType(StrEnum):
     RUN_START = "run_start"
+    RECOVERY = "recovery"
     COMPRESSION = "compression"
     LLM_REQUEST = "llm_request"
     LLM_RESPONSE = "llm_response"
@@ -283,3 +284,6 @@ class TraceEvent(BaseModel):
     final_answer: str | None = None
     status: AgentRunStatus | None = None
     loop_steps: int | None = Field(default=None, ge=0)
+    recovery_kind: str | None = None
+    previous_terminal_role: MessageRole | None = None
+    previous_terminal_state: str | None = None
