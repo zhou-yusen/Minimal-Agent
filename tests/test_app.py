@@ -2,6 +2,7 @@ import pytest
 
 from minimal_agent.app import build_service
 from minimal_agent.config import Settings
+from minimal_agent.tracing import InMemoryTraceSink
 
 
 @pytest.mark.asyncio
@@ -24,3 +25,17 @@ async def test_build_service_wires_store_and_production_tools(tmp_path) -> None:
         "search",
         "todo",
     ]
+
+
+def test_build_service_accepts_a_user_facing_trace_sink(tmp_path) -> None:
+    sink = InMemoryTraceSink()
+
+    service = build_service(
+        Settings(
+            deepseek_api_key="test-key",
+            session_database_path=tmp_path / "agent.db",
+        ),
+        trace_sink=sink,
+    )
+
+    assert service._runtime._trace_sink is sink  # type: ignore[attr-defined]

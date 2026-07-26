@@ -581,3 +581,80 @@ focused regression test.
 The focused CLI suite passed, and the same real composite session was reopened
 after the fix. Its previously added Todo item was returned from SQLite without a
 traceback, completing the restart-persistence demo.
+
+## 2026-07-27 - Readable execution steps without exposing private reasoning
+
+### Problem
+
+The CLI showed only the final answer by default. Its JSON debug mode contained
+the necessary evidence, but was too noisy for a user who simply wanted to see
+whether the model chose a tool and what happened during execution.
+
+### Analysis
+
+The runtime already emits structured decision, tool, context, recovery, error,
+and completion events. Exposing provider reasoning would violate the project's
+privacy boundary, while asking the LLM for a separate explanation would add cost
+and could produce a post-hoc account that did not match the actual control flow.
+
+### Options
+
+1. Display provider reasoning or synthesize a chain-of-thought.
+2. Add another LLM call to narrate each step.
+3. Render the existing structured TraceEvent stream in a human-readable form.
+
+### Decision
+
+Use option 3. Add an opt-in `ConsoleTraceSink` and a mutually exclusive
+`--show-steps` CLI flag. The sink displays decision types, tool arguments,
+results, compression/recovery metadata, and terminal status, but never reads or
+renders reasoning fields. `--debug` remains the machine-readable JSON mode.
+
+### AI Assistance
+
+AI identified the existing TraceSink seam, kept AgentRuntime unchanged, designed
+the safe event projection, and added focused wiring and rendering tests.
+
+### Verification
+
+Tests assert readable tool-loop evidence, safe error projection, omission of the
+reasoning marker, CLI sink injection, and mutual exclusion with JSON debug mode.
+
+## 2026-07-27 - Load local development configuration from `.env`
+
+### Problem
+
+The documented `.env.example` suggested a local `.env` workflow, but the
+application read only `os.environ`. A key stored in `.env` was therefore ignored
+unless the user manually copied it into every new PowerShell process.
+
+### Analysis
+
+Manual shell loading protected the configuration boundary but made the common
+local CLI path unnecessarily surprising. Import-time validation must remain
+side-effect free, and tests that inject an explicit environment mapping must not
+accidentally inherit developer credentials.
+
+### Options
+
+1. Keep requiring a PowerShell command on every new terminal.
+2. Write a project-specific `.env` parser.
+3. Load `.env` with `python-dotenv` only inside `Settings.from_env()`.
+
+### Decision
+
+Use option 3. When no explicit mapping is supplied, `Settings.from_env()` loads
+the nearest `.env` from the current working directory without overriding process
+environment variables. Explicit mappings bypass `.env`, preserving deterministic
+tests and configuration injection. Importing `minimal_agent` still requires no
+credential.
+
+### AI Assistance
+
+AI scoped the dependency to the configuration boundary, defined precedence and
+test isolation, and updated the bilingual setup documentation.
+
+### Verification
+
+Configuration tests cover `.env` loading, process-variable precedence, explicit
+mapping isolation, and the existing optional-key import behavior.

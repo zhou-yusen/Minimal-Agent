@@ -33,7 +33,8 @@ recovery.
 All five tests live in `tests/integration/test_deepseek_real.py`, carry the
 `integration` marker, access the real DeepSeek API, and may incur a small API
 cost. They run only when both `RUN_LLM_INTEGRATION=1` and `DEEPSEEK_API_KEY` are
-present in the process environment. The project does not load `.env` implicitly.
+available after configuration loading. The project loads a local `.env` through
+`python-dotenv`; existing process environment variables take precedence.
 
 1. **Direct Final** — empty tools, short prompt, visible final text.
 2. **Forced Tool Call** — only the test-local `integration_echo` schema is

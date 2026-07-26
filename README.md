@@ -1,5 +1,7 @@
 # Minimal Agent Runtime
 
+> 中文文档导航：[docs/README.zh-CN.md](docs/README.zh-CN.md)
+
 ## 项目概述
 
 Minimal Agent Runtime 是一个从零实现、不依赖 Agent Framework 的最小 Python
@@ -107,16 +109,15 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
-程序有意只读取 `os.environ`，不会自动加载 `.env`，也没有引入
-`python-dotenv`。如果 Key 保存在本地 `.env`，可在当前 PowerShell 中加载，且
-不会打印 Key：
+程序使用 `python-dotenv` 自动读取当前项目目录的 `.env`。把 Key 写入本地文件后
+可以直接启动 CLI：
 
-```powershell
-$line = Get-Content .env | Where-Object { $_ -match '^DEEPSEEK_API_KEY=' }
-$env:DEEPSEEK_API_KEY = $line.Substring('DEEPSEEK_API_KEY='.Length).Trim()
+```dotenv
+DEEPSEEK_API_KEY=your_api_key_here
 ```
 
-也可以直接为当前 Shell 设置：
+已有的系统环境变量优先于 `.env`，便于部署时覆盖本地配置。`.env` 已被
+`.gitignore` 忽略，程序不会打印 API Key。也可以直接为当前 Shell 设置：
 
 ```powershell
 $env:DEEPSEEK_API_KEY="your_api_key_here"
@@ -146,8 +147,30 @@ Agent> ...
 You> /exit
 ```
 
-不传 `--session` 时会自动生成一个短 Session ID。使用 `--debug` 可显示 INFO
-级 JSON Trace；默认使用 WARNING，避免 Trace 淹没聊天界面。
+不传 `--session` 时会自动生成一个短 Session ID。要实时查看模型是否调用工具、工具
+参数和结果，可启用可读步骤模式：
+
+```powershell
+.\.venv\Scripts\python.exe -m minimal_agent.cli --user demo --session demo1 --show-steps
+```
+
+`--show-steps` 展示可观察的运行决策，不展示或伪造模型的隐藏思维链。例如：
+
+```text
+[Step 1] 正在请求 LLM
+[Decision] 模型请求调用 1 个工具
+[Tool] calculator
+  arguments: {"expression":"12345*6789"}
+  status: success
+  result: {"ok":true,"output":{"result":83810205}}
+[Step 2] 正在请求 LLM
+[Decision] 模型生成最终回答
+[Run] status=completed loop_steps=2
+Agent> 计算结果是 83810205。
+```
+
+`--debug` 输出供开发排障使用的 INFO 级 JSON Trace。两种模式互斥；默认使用
+WARNING，避免 Trace 淹没聊天界面。
 
 ## 工具系统
 
@@ -211,7 +234,8 @@ History 重建；真实 DeepSeek Integration Test 已验证该路径。
 
 ## Trace 与异常处理
 
-使用 `--debug` 可输出脱敏后的结构化事件：
+使用 `--debug` 可输出脱敏后的结构化事件；使用 `--show-steps` 可在聊天界面中查看
+同一批事件的可读版本，包括决策类型、工具名称、参数、成功/失败状态和结果：
 
 ```json
 {"event_type":"llm_request","loop_step":1}
@@ -229,9 +253,9 @@ Runtime Decision 对应一次 Provider Attempt。
 如果存在已持久化但未完成的 Turn，下一次请求会先封存并 Checkpoint 该 Turn；不会
 重新执行旧工具，也不会删除持久化证据。
 
-开发 Trace 可能包含脱敏后的 Tool 参数和结果，因此仍可能包含用户数据；但不会包含
-API Key、Authorization Header、Raw Provider Body、Traceback 或 Private
-Reasoning。
+开发 Trace 和 `--show-steps` 可能包含 Tool 参数和结果，因此仍可能包含用户数据；但
+不会包含 API Key、Authorization Header、Raw Provider Body、Traceback 或 Private
+Reasoning。项目关闭 Thinking，且不会把结构化运行步骤描述成模型的思维链。
 
 ## 测试
 
@@ -413,14 +437,15 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
-The application intentionally reads only `os.environ`; it does not load `.env`
-automatically and does not use `python-dotenv`. Load a local key into the current
-PowerShell process without printing it:
+The application uses `python-dotenv` to load `.env` from the current project
+directory automatically. Put the key in the local file and start the CLI:
 
-```powershell
-$line = Get-Content .env | Where-Object { $_ -match '^DEEPSEEK_API_KEY=' }
-$env:DEEPSEEK_API_KEY = $line.Substring('DEEPSEEK_API_KEY='.Length).Trim()
+```dotenv
+DEEPSEEK_API_KEY=your_api_key_here
 ```
+
+Existing process environment variables override `.env` values. `.env` is
+gitignored, and the application never prints the API key.
 
 ## Run the CLI
 
@@ -444,8 +469,16 @@ Agent> ...
 You> /exit
 ```
 
-Omit `--session` to generate a short Session ID. Add `--debug` to show INFO-level
-JSON traces; normal mode remains at WARNING.
+Omit `--session` to generate a short Session ID. To see tool decisions,
+arguments, and results as they happen, enable readable steps:
+
+```powershell
+.\.venv\Scripts\python.exe -m minimal_agent.cli --user demo --session demo1 --show-steps
+```
+
+`--show-steps` renders observable runtime decisions; it does not expose or
+invent hidden chain-of-thought. Add `--debug` for INFO-level JSON traces. The two
+modes are mutually exclusive, and normal mode remains at WARNING.
 
 ## Tools
 
@@ -488,7 +521,9 @@ history. The real integration suite verifies this path.
 
 ## Tracing and Failure Semantics
 
-Use `--debug` for sanitized structured traces:
+Use `--debug` for sanitized structured traces. Use `--show-steps` to render the
+same event stream as readable decision types, tool names, arguments, statuses,
+and results in the chat interface:
 
 ```json
 {"event_type":"llm_request","loop_step":1}
@@ -503,6 +538,11 @@ emit an error trace and propagate safe domain errors. SDK retries remain disable
 one Runtime decision equals one provider attempt. A later request seals and
 checkpoints an incomplete durable turn without replaying old tools or deleting
 evidence.
+
+Development traces and `--show-steps` may contain user data carried in tool
+arguments and results. They do not contain API keys, authorization headers, raw
+provider bodies, tracebacks, or private reasoning. Thinking remains disabled,
+and observable execution steps are not presented as chain-of-thought.
 
 ## Tests
 

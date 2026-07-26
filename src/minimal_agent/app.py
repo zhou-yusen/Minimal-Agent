@@ -3,6 +3,7 @@
 from minimal_agent.config import Settings
 from minimal_agent.context import ContextManager
 from minimal_agent.llm.deepseek_client import DeepSeekChatClient
+from minimal_agent.protocols import TraceSink
 from minimal_agent.runtime import AgentRuntime
 from minimal_agent.service import AgentService
 from minimal_agent.sessions.sqlite import SQLiteSessionStore
@@ -19,7 +20,11 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_service(settings: Settings) -> AgentService:
+def build_service(
+    settings: Settings,
+    *,
+    trace_sink: TraceSink | None = None,
+) -> AgentService:
     """Wire the single application graph from validated settings."""
     llm = DeepSeekChatClient(settings)
     tools = ToolRegistry()
@@ -40,6 +45,8 @@ def build_service(settings: Settings) -> AgentService:
         system_prompt=SYSTEM_PROMPT,
         max_steps=settings.max_loop_steps,
         max_output_tokens=settings.response_token_reserve,
-        trace_sink=JsonLoggingTraceSink(),
+        trace_sink=(
+            trace_sink if trace_sink is not None else JsonLoggingTraceSink()
+        ),
     )
     return AgentService(store=store, runtime=runtime)

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar
 
+from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
@@ -61,7 +62,15 @@ class Settings(BaseModel):
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
-        """Load only documented settings; an API key remains optional."""
+        """Load documented settings from ``.env`` and the process environment.
+
+        An explicitly supplied mapping remains isolated for deterministic tests.
+        Existing process variables take precedence over values in ``.env``.
+        """
+        if environ is None:
+            dotenv_path = find_dotenv(usecwd=True)
+            if dotenv_path:
+                load_dotenv(dotenv_path, override=False)
         source = os.environ if environ is None else environ
         values = {
             field_name: source[env_name]

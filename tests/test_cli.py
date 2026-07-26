@@ -161,8 +161,13 @@ async def test_cli_displays_safe_domain_error_and_continues() -> None:
     assert "Agent error: LLM provider request timed out" in output
 
 
-def test_main_requires_api_key(monkeypatch, capsys) -> None:
+def test_main_requires_api_key(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "minimal_agent.config.find_dotenv",
+        lambda **kwargs: "",
+    )
 
     exit_code = cli.main([])
 
@@ -199,9 +204,44 @@ def test_main_generates_short_session(monkeypatch) -> None:
         captured["session_id"] = session_id
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "build_service", lambda settings: service)
+    monkeypatch.setattr(
+        cli,
+        "build_service",
+        lambda settings, *, trace_sink=None: service,
+    )
     monkeypatch.setattr(cli, "run_interactive", capture_run)
 
     assert cli.main(["--user", "greg"]) == 0
     assert captured["user_id"] == "greg"
     assert len(captured["session_id"]) == 8
+
+
+def test_main_show_steps_wires_console_sink(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    service = RecordingService()
+
+    async def stop_immediately(
+        built_service,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> None:
+        del user_id, session_id
+        assert built_service is service
+
+    def capture_build(settings, *, trace_sink=None):
+        del settings
+        captured["trace_sink"] = trace_sink
+        return service
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "build_service", capture_build)
+    monkeypatch.setattr(cli, "run_interactive", stop_immediately)
+
+    assert cli.main(["--show-steps"]) == 0
+    assert isinstance(captured["trace_sink"], cli.ConsoleTraceSink)
+
+
+def test_debug_and_show_steps_are_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["--debug", "--show-steps"])

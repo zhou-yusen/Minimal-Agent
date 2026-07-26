@@ -18,10 +18,13 @@ loop, tool dispatch, persistence, or context selection.
 
 ## CLI usage
 
-Export the key into the current shell; the application does not load `.env`:
+Put the key in the project-root `.env` (or export it in the current shell):
+
+```dotenv
+DEEPSEEK_API_KEY=...
+```
 
 ```powershell
-$env:DEEPSEEK_API_KEY="..."
 .\.venv\Scripts\python.exe -m minimal_agent.cli --user demo --session demo1
 ```
 
@@ -63,8 +66,8 @@ conversation and tool state survive process restart through SQLite.
 
 ## Phase 8A acceptance criteria
 
-- `python -m minimal_agent.cli` starts a real interactive client when the process
-  environment contains `DEEPSEEK_API_KEY`.
+- `python -m minimal_agent.cli` starts a real interactive client when
+  `DEEPSEEK_API_KEY` is available from `.env` or the process environment.
 - Calculator, deterministic mock Search, and Todo are the only CLI tools.
 - Reusing the composite identity resumes SQLite history and Todo state.
 - Default output is readable; `--debug` enables structured INFO traces.

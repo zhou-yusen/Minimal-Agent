@@ -45,6 +45,52 @@ def test_settings_parse_documented_environment() -> None:
     assert settings.recent_turns_to_keep == 6
 
 
+def test_settings_load_dotenv_from_working_directory(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / ".env").write_text(
+        "DEEPSEEK_API_KEY=dotenv-secret\nMAX_LOOP_STEPS=7\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("MAX_LOOP_STEPS", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.deepseek_api_key is not None
+    assert settings.deepseek_api_key.get_secret_value() == "dotenv-secret"
+    assert settings.max_loop_steps == 7
+
+
+def test_process_environment_overrides_dotenv(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text(
+        "DEEPSEEK_API_KEY=dotenv-secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "process-secret")
+
+    settings = Settings.from_env()
+
+    assert settings.deepseek_api_key is not None
+    assert settings.deepseek_api_key.get_secret_value() == "process-secret"
+
+
+def test_explicit_environment_mapping_does_not_read_dotenv(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / ".env").write_text(
+        "DEEPSEEK_API_KEY=dotenv-secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings.from_env({})
+
+    assert settings.deepseek_api_key is None
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

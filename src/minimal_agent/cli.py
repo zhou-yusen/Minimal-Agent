@@ -13,6 +13,7 @@ from minimal_agent.app import build_service
 from minimal_agent.config import Settings
 from minimal_agent.errors import MinimalAgentError, SessionNotFoundError
 from minimal_agent.service import AgentService
+from minimal_agent.tracing import ConsoleTraceSink
 
 
 InputReader = Callable[[str], str]
@@ -30,10 +31,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Chat with the Minimal Agent")
     parser.add_argument("--user", default="local-user", help="durable user ID")
     parser.add_argument("--session", help="session ID; defaults to a short UUID")
-    parser.add_argument(
+    trace_mode = parser.add_mutually_exclusive_group()
+    trace_mode.add_argument(
         "--debug",
         action="store_true",
         help="show structured INFO-level runtime traces",
+    )
+    trace_mode.add_argument(
+        "--show-steps",
+        action="store_true",
+        help="show readable decisions and tool activity; may include user data",
     )
     return parser
 
@@ -87,7 +94,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     session_id = args.session or uuid4().hex[:8]
     try:
-        service = build_service(settings)
+        trace_sink = ConsoleTraceSink() if args.show_steps else None
+        service = build_service(settings, trace_sink=trace_sink)
         asyncio.run(
             run_interactive(
                 service,

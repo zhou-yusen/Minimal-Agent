@@ -31,7 +31,11 @@ from minimal_agent.runtime import AgentRuntime
 from minimal_agent.tools.calculator import CalculatorTool
 from minimal_agent.tools.registry import ToolRegistry
 from minimal_agent.tools.todo import TodoTool
-from minimal_agent.tracing import InMemoryTraceSink, JsonLoggingTraceSink
+from minimal_agent.tracing import (
+    ConsoleTraceSink,
+    InMemoryTraceSink,
+    JsonLoggingTraceSink,
+)
 from tests.runtime.fakes import ScriptedFakeLLM
 
 
@@ -95,6 +99,121 @@ def state() -> SessionState:
 
 def event_types(sink: InMemoryTraceSink) -> list[TraceEventType]:
     return [event.event_type for event in sink.events]
+
+
+@pytest.mark.asyncio
+async def test_console_sink_renders_decisions_tools_and_finish_without_reasoning(
+) -> None:
+    output: list[str] = []
+    sink = ConsoleTraceSink(output.append)
+    common = {
+        "user_id": "user",
+        "session_id": "session",
+        "turn_id": "turn",
+    }
+
+    for event in [
+        TraceEvent(
+            event_type=TraceEventType.LLM_REQUEST,
+            loop_step=1,
+            **common,
+        ),
+        TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            loop_step=1,
+            llm_response_type=LLMResponseType.TOOL_CALLS,
+            tool_call_count=1,
+            reasoning_present=True,
+            **common,
+        ),
+        TraceEvent(
+            event_type=TraceEventType.TOOL_START,
+            loop_step=1,
+            tool_name="calculator",
+            tool_call_id="call-1",
+            tool_args={"expression": "2+2"},
+            **common,
+        ),
+        TraceEvent(
+            event_type=TraceEventType.TOOL_RESULT,
+            loop_step=1,
+            tool_name="calculator",
+            tool_call_id="call-1",
+            tool_ok=True,
+            tool_result={"ok": True, "output": {"result": 4}},
+            **common,
+        ),
+        TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            loop_step=2,
+            llm_response_type=LLMResponseType.FINAL,
+            tool_call_count=0,
+            **common,
+        ),
+        TraceEvent(
+            event_type=TraceEventType.RUN_FINISH,
+            status=AgentRunStatus.COMPLETED,
+            loop_steps=2,
+            **common,
+        ),
+    ]:
+        await sink.emit(event)
+
+    rendered = "\n".join(output)
+    assert "[Step 1] 正在请求 LLM" in rendered
+    assert "[Decision] 模型请求调用 1 个工具" in rendered
+    assert "[Tool] calculator" in rendered
+    assert 'arguments: {"expression":"2+2"}' in rendered
+    assert "status: success" in rendered
+    assert "[Decision] 模型生成最终回答" in rendered
+    assert "[Run] status=completed loop_steps=2" in rendered
+    assert "reasoning" not in rendered.casefold()
+
+
+@pytest.mark.asyncio
+async def test_console_sink_renders_safe_recovery_compression_and_error_metadata(
+) -> None:
+    output: list[str] = []
+    sink = ConsoleTraceSink(output.append)
+    common = {
+        "user_id": "user",
+        "session_id": "session",
+        "turn_id": "turn",
+    }
+
+    await sink.emit(
+        TraceEvent(
+            event_type=TraceEventType.RECOVERY,
+            recovery_kind="interrupted_turn",
+            **common,
+        )
+    )
+    await sink.emit(
+        TraceEvent(
+            event_type=TraceEventType.COMPRESSION,
+            compression_attempted=True,
+            compression_status="fallback",
+            **common,
+        )
+    )
+    await sink.emit(
+        TraceEvent(
+            event_type=TraceEventType.ERROR,
+            error={
+                "code": "llm_timeout",
+                "stage": "llm_complete",
+                "message": "agent operation failed",
+                "private": "MUST_NOT_RENDER",
+            },
+            **common,
+        )
+    )
+
+    rendered = "\n".join(output)
+    assert "[Recovery]" in rendered
+    assert "[Context] compression=fallback" in rendered
+    assert "[Error] code=llm_timeout stage=llm_complete" in rendered
+    assert "MUST_NOT_RENDER" not in rendered
 
 
 @pytest.mark.asyncio
