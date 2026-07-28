@@ -99,6 +99,8 @@ class AgentRuntime:
         )
 
         try:
+            # 如果上一次进程在 Tool Call 或 Tool Result 后中断，先追加受控终止消息。
+            # 这里绝不重新执行旧工具，避免重复产生外部副作用。
             interrupted_start: int | None = None
             if self._has_trailing_incomplete_turn(session):
                 interrupted_start = self._trailing_turn_start(session)
@@ -124,6 +126,8 @@ class AgentRuntime:
                 stage = "recovery_checkpoint"
                 await self._checkpoint(session, checkpoint)
 
+            # User Message 一经接收就持久化。后续即使 LLM 或工具失败，
+            # Session 仍保留用户已经发出请求这一事实。
             self._append(
                 session,
                 ConversationMessage(role=MessageRole.USER, content=user_message),
@@ -133,6 +137,8 @@ class AgentRuntime:
 
             tool_definitions = self._tools.definitions()
             stage = "context_build"
+            # 恢复中断 Turn 时使用临时 Context 视图，排除不完整的旧执行片段；
+            # 原始 History 仍完整保留在真实 Session 中，便于审计和恢复。
             context_session = self._context_session(
                 session,
                 interrupted_start=interrupted_start,
@@ -173,6 +179,8 @@ class AgentRuntime:
                 tool_state=session.tool_state,
             )
 
+            # 一个 loop_step 精确定义为一次 LLM 决策请求，而不是一次工具调用。
+            # range 上界保证最多调用 complete() max_steps 次，避免 off-by-one。
             for loop_step in range(1, self._max_steps + 1):
                 request = LLMRequest(
                     system_prompt=self._system_prompt,
@@ -221,6 +229,8 @@ class AgentRuntime:
                 )
 
                 if result.response_type is LLMResponseType.FINAL:
+                    # 只有“无 Tool Call 且有可见文本”的标准化结果才会进入此分支；
+                    # LLMResult 的 Pydantic 不变量负责在 Runtime 前拦截非法形状。
                     self._append(session, result.assistant_message)
                     stage = "final_checkpoint"
                     await self._checkpoint(session, checkpoint)
@@ -250,6 +260,8 @@ class AgentRuntime:
                     )
                 self._append(session, result.assistant_message)
                 tool_messages: list[ConversationMessage] = []
+                # 同一 Response 中的多个 Tool Call 按模型返回顺序执行。
+                # 全部执行完毕后才再次调用 LLM，因此它们共享当前 loop_step。
                 for call in result.assistant_message.tool_calls:
                     await self._emit_trace(
                         TraceEvent(
@@ -283,14 +295,20 @@ class AgentRuntime:
                     self._append(session, tool_message)
                     tool_messages.append(tool_message)
 
+                # 一批 Tool Result 只做一次 Checkpoint。Todo 对 tool_state 的修改
+                # 已通过 ToolContext 的直接引用进入 Session，会随本次保存持久化。
                 stage = "tool_checkpoint"
                 await self._checkpoint(session, checkpoint)
+                # Chat Completions 不使用 Provider continuation ID。活动 Run 的
+                # 下一轮重放初始有界 Context，加上至今所有 Assistant Call/Result。
                 request_messages = [
                     *request_messages,
                     result.assistant_message,
                     *tool_messages,
                 ]
 
+            # 最后一个允许的 Step 即使返回 Tool Call，也已在上面执行并保存结果。
+            # 此处只追加确定性终止消息，绝不偷偷发起第 max_steps + 1 次 LLM 请求。
             terminal_message = ConversationMessage(
                 role=MessageRole.ASSISTANT,
                 content=self.MAX_STEPS_MESSAGE,
@@ -337,6 +355,7 @@ class AgentRuntime:
         session: SessionState,
         checkpoint: Checkpoint | None,
     ) -> None:
+        # Runtime 只依赖回调契约，不知道 SQLite 或其他 SessionStore 实现。
         if checkpoint is not None:
             await checkpoint(session)
 
@@ -346,6 +365,8 @@ class AgentRuntime:
         try:
             await self._trace_sink.emit(event)
         except Exception:
+            # Trace 是 best-effort 可观察性能力，Sink 故障不能改变 Agent 行为、
+            # Checkpoint 顺序或最终返回结果。
             pass
 
     async def _emit_finish(
@@ -422,6 +443,8 @@ class AgentRuntime:
 
     @staticmethod
     def _safe_error(exc: Exception, stage: str) -> dict[str, Any]:
+        # Trace 只记录稳定 Domain Code 和安全关联信息，不暴露 Provider Body、
+        # Header、原始异常文本或 Stack Trace。
         if isinstance(exc, LLMTimeoutError):
             code = "llm_timeout"
         elif isinstance(exc, LLMConnectionError):
@@ -470,6 +493,8 @@ class AgentRuntime:
 
     @staticmethod
     def _tool_message(result: ToolResult) -> ConversationMessage:
+        # 发给 LLM 的 Tool Message 只包含标准 JSON 结果，不包含 latency_ms、
+        # Python repr 或 Traceback；tool_call_id 必须与原始调用保持一致。
         if result.ok:
             payload = {"ok": True, "output": result.output}
         else:

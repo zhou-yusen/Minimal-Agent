@@ -2,6 +2,7 @@
 
 - [项目 README（默认中文、附英文版）](../README.md)
 - [项目开发指令](../AGENTS.zh-CN.md)
+- [项目构建过程与设计理由](build_process.zh-CN.md)
 - [冻结架构](architecture.zh-CN.md)
 - [系统与流程图](diagrams.zh-CN.md)
 - [AI 问题解决记录](ai_dev_log.zh-CN.md)

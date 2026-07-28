@@ -29,6 +29,19 @@ OpenAI-compatible Chat Completions API 调用 DeepSeek V4 Flash，并保持实�
 - DeepSeek 真实 API Adapter，关闭 Thinking 和 SDK 隐式 Retry
 - 可交互 CLI、确定性离线测试和显式启用的真实 Provider 测试
 
+## 技术栈
+
+| 分类 | 选择 |
+|---|---|
+| Language | Python 3.11+ |
+| LLM / SDK | DeepSeek Chat Completions / OpenAI Python SDK |
+| Validation | Pydantic |
+| Persistence | SQLite |
+| Configuration | `python-dotenv` + Process Environment |
+| Async Runtime | `asyncio` |
+| Testing | pytest + pytest-asyncio |
+| CLI | Python Standard Library |
+
 ## 系统架构
 
 ```mermaid
@@ -49,6 +62,20 @@ flowchart TD
 `AgentRuntime` 负责有界决策循环；`AgentService` 只负责加载 Session 和持久化
 Checkpoint；CLI 只处理终端输入输出。详细内容参见
 [架构文档](docs/architecture.md)和[系统流程图](docs/diagrams.md)。
+
+### 组件职责
+
+| 组件 | 职责 | 不负责的内容 |
+|---|---|---|
+| `AgentService` | 加载 Session、调用 Runtime、注入 Checkpoint | LLM/Tool 循环 |
+| `AgentRuntime` | 单个 User Turn 内的有界决策循环 | SQLite、CLI 输入输出 |
+| `DeepSeekChatClient` | Provider 协议映射和错误标准化 | Tool 执行 |
+| `ToolRegistry` | Schema、参数校验、Tool 分发、失败标准化 | 关键词工具路由 |
+| `ContextManager` | 请求预算、Turn 选择、Summary 和降级 | 删除持久化历史 |
+| `SessionStore` | 按复合身份管理 Session | Agent 决策 |
+| `TraceSink` | 接收结构化运行事件 | 改变 Runtime 结果 |
+
+各层通过 Provider-neutral Model 和 Protocol 连接，使 Runtime 可以使用 Fake LLM、临时 SQLite 和 In-memory Trace 进行确定性测试。
 
 ## Agent Loop
 
@@ -90,16 +117,29 @@ tests/
 
 ## 安装
 
-要求：
+### 1. 获取项目
 
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/)
-- 真实运行 LLM 时需要 DeepSeek API Key
+```powershell
+git clone git@github.com:zhou-yusen/Minimal-Agent.git
+cd Minimal-Agent
+```
 
-安装锁定版本的项目和开发依赖：
+### 2. 安装依赖
+
+要求 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
 
 ```powershell
 uv sync
+```
+
+该命令会根据 `pyproject.toml` 和 `uv.lock` 创建 `.venv`，并安装运行与测试依赖。
+
+### 3. 配置 Provider
+
+复制配置模板：
+
+```powershell
+Copy-Item .env.example .env
 ```
 
 配置项参见 [.env.example](.env.example)。默认 Provider 配置：
@@ -123,7 +163,7 @@ DEEPSEEK_API_KEY=your_api_key_here
 $env:DEEPSEEK_API_KEY="your_api_key_here"
 ```
 
-## 运行 CLI
+## 运行方式
 
 ```powershell
 .\.venv\Scripts\python.exe -m minimal_agent.cli --user demo --session demo1
@@ -183,39 +223,122 @@ WARNING，避免 Trace 淹没聊天界面。
 Search 是刻意设计的 Mock，而不是 Internet Search。这样既满足题目要求，也保证
 默认测试稳定、可重复。
 
-## Session 与持久化
+## Session 与 Memory
 
-Session 使用 `(user_id, session_id)` 复合身份。因此，即使 Session 名称相同，不同
-用户之间也不会共享状态。对话历史、Todo 状态、Summary 和时间戳默认保存到：
+本项目实现的是可解释的 Session Memory，不使用向量数据库、Embedding Retrieval 或独立长期 Memory 服务。
+
+### Memory 存放位置
+
+Session 使用 `(user_id, session_id)` 复合身份。即使 Session 名称相同，不同用户之间也不会共享状态。默认数据库为：
 
 ```text
 data/minimal_agent.db
 ```
 
-验证进程重启后的持久化：
+SQLite 中每个 Session 保存一个经过 Pydantic 校验的 `SessionState` JSON：
+
+```text
+SessionState
+├── history                     # 完整 User/Assistant/Tool 消息
+├── tool_state
+│   └── todo                    # Session 级 Todo 状态
+├── summary                     # 较早完整轮次的滚动摘要
+├── summary_up_to_message_id    # Summary 覆盖边界
+├── created_at / updated_at
+└── version
+```
+
+- `history` 是恢复和审计的完整事实来源，不会因压缩被删除。
+- `tool_state` 保存结构化工具状态；Todo 位于 `tool_state["todo"]`。
+- `summary` 保存较早完整 Turn 的语义摘要。
+- `summary_up_to_message_id` 防止同一批历史被重复总结。
+
+### Memory 召回时机
+
+Memory 在每个新 User Turn 开始时召回，而不是依赖关键词触发：
+
+1. `AgentService.send_message()` 使用 `(user_id, session_id)` 加载完整 `SessionState`。
+2. Runtime 追加当前 User Message，并立即执行 User Checkpoint。
+3. `ContextManager.build()` 读取 History、Summary 和 Summary Boundary。
+4. ContextManager 从持久化 Memory 中选择本轮发送给 LLM 的有界 Context。
+
+### Memory 如何放入 LLM Context
+
+```text
+System Prompt
++ [Summary of earlier conversation]
++ 最近完整 Turn
++ 当前 User Turn
++ 当前 active run 新产生的 Assistant Tool Calls / Tool Results
+```
+
+| 内容 | 是否进入 Context | 说明 |
+|---|---|---|
+| System Prompt | 是 | 每次 LLM Request 都携带 |
+| Tool Schema | 是 | LLM 根据 Schema 自主选择工具 |
+| Rolling Summary | 需要时 | 表示较早的完整对话 |
+| 最近 User/Assistant Turn | 是 | 支持代词、省略和普通追问 |
+| Assistant Tool Call | 是 | 与 Tool Result 成对重放 |
+| Tool Result | 是 | 支持围绕工具结果继续追问 |
+| Todo State JSON | 不直接注入 | 通过 Todo Tool 查询，避免重复占用 Context |
+| Private Reasoning | 否 | 不读取、不保存、不重放 |
+
+持久化 History 与 LLM Context 是不同概念：SQLite 保存完整事实，ContextManager 只发送 Token Budget 内对当前推理有用的内容。
+
+### Memory 写入时机
+
+Session 采用分阶段 Checkpoint：
+
+1. **User Checkpoint**：接收 User Message 后立即保存。
+2. **Tool Batch Checkpoint**：同一 Response 的全部 Tool 执行后，保存 Tool Result 和 Tool State。
+3. **Final Checkpoint**：获得 Final Answer 或 Max-step Terminal Message 后保存。
+4. **Recovery Checkpoint**：发现上一次未完成 Turn 时，先追加中断标记并保存。
+
+即使 Provider Timeout 或进程中断，已经发生的 User Message、Tool Result 和 Todo 修改仍可恢复。
+
+### Context 压缩时机
+
+每次构造首轮 LLM Request 时，ContextManager 估算完整请求：
+
+```text
+System Prompt
++ 序列化 Tool Schema
++ History / Summary
++ Response Token Reserve
+```
+
+默认配置：
+
+```text
+CONTEXT_TOKEN_LIMIT=8000
+CONTEXT_COMPRESSION_TRIGGER=6000
+RESPONSE_TOKEN_RESERVE=1000
+RECENT_TURNS_TO_KEEP=4
+```
+
+达到 Trigger 后只总结较早且已经完成的 Turn，保留近期完整 Turn 和 Tool Call/Result Pair。`LLMClient.summarize()` 不携带 Tool Schema，不允许 Tool Calling，只返回 Summary Text。压缩成功后更新 `summary` 和覆盖边界，但不删除 SQLite 中的 Raw History。
+
+压缩失败时保留旧 Summary，并选择 Token Limit 内最大的完整 Turn 后缀。Compression 是优化能力，不会单独导致 User Turn 失败。
+
+### Memory 一致性边界
+
+- Tool Call 与对应 Tool Result 不会被拆开。
+- Todo State 只属于当前复合 Session，不使用模块级 Global List。
+- 新 User Turn 完全从本地 Session History 重建。
+- 不依赖 Provider Conversation State。
+- 不持久化 Private Chain-of-thought。
+
+### 验证 Session 恢复
 
 ```powershell
 .\.venv\Scripts\python.exe -m minimal_agent.cli --user greg --session interview
 ```
 
-添加一个 Todo 后退出，再运行相同命令并要求查看 Todo。CLI 会加载已有 Session，
-而不是覆盖它。
-
-## Context 管理
-
-每次请求由以下内容组成：
-
-```text
-System Prompt + Rolling Summary + 最近完整轮次 + 当前 Turn
-```
-
-预算同时考虑 System Prompt、序列化 Tool Schema、History/Summary 和预留输出容量。
-压缩只总结已经完成的旧轮次，完整原始 History 仍保存在 SQLite 中，并且不会拆开
-Tool Call 与对应 Tool Result。
+添加一个 Todo 后退出，再运行相同命令并要求查看 Todo。CLI 会加载已有 Session，而不是覆盖它。
 
 ## DeepSeek 与 Tool Replay
 
-V1 只支持 `deepseek-v4-flash`。项目显式关闭 Thinking，因为 Thinking 与 Tool Call
+当前 Provider 使用 `deepseek-v4-flash`。项目显式关闭 Thinking，因为 Thinking 与 Tool Call
 组合可能要求重放 reasoning state，而本项目从不持久化 private chain-of-thought。
 Adapter 只允许安全的 `reasoning_present: bool` 越过边界，丢弃
 `reasoning_content`。
@@ -305,14 +428,14 @@ $env:RUN_LLM_INTEGRATION="1"
 
 - **为什么不用 Agent Framework？** 笔试目标是展示 Runtime Loop 及其边界，而不是
   用 Framework Primitive 隐藏核心逻辑。
-- **为什么使用 SQLite？** 无需额外基础设施即可提供可靠、事务化的 MVP 持久化。
-- **为什么顺序执行工具？** Todo 会修改状态；V1 优先保证确定性和可测试性。
+- **为什么使用 SQLite？** 无需额外基础设施即可提供可靠、事务化的持久化。
+- **为什么顺序执行工具？** Todo 会修改状态，因此顺序执行优先保证确定性和可测试性。
 - **为什么需要 `max_steps`？** 防止无限 LLM/Tool 循环，并提供受控终止结果。
 - **为什么不自动 Retry？** Tool 可能产生副作用；在没有幂等策略前，每个决策只进行
   一次 Provider Attempt。
 - **为什么关闭 Thinking？** 应用不会持久化或重放 Private Reasoning State。
 
-## V1 有意不做的内容
+## 设计边界
 
 - Internet Search
 - 并行 Tool 和同 Session 并发写入
@@ -322,8 +445,7 @@ $env:RUN_LLM_INTEGRATION="1"
 - 精确 Provider Tokenizer；当前预算使用有文档说明的近似方法
 - 多 LLM Provider 或 Provider Registry
 
-CLI 是 V1 的可执行 Demo Adapter。FastAPI 是未来可能增加的 Adapter，不是当前
-Runtime 能力缺失。
+这些能力不是验证 Agent Loop、Session Memory、Failure Recovery 和 Tool Protocol 正确性的必要条件。
 
 ## AI 辅助开发说明
 
@@ -382,7 +504,7 @@ flowchart TD
 `AgentRuntime` owns the bounded decision loop. `AgentService` only coordinates
 durable Session loading and checkpoints; the CLI only handles terminal I/O. See
 [the detailed diagrams](docs/diagrams.md) and
-[the frozen architecture](docs/architecture.md).
+[the architecture document](docs/architecture.md).
 
 ## Agent Loop
 
@@ -491,11 +613,16 @@ modes are mutually exclusive, and normal mode remains at WARNING.
 Search is intentionally a mock, not Internet search, which keeps the required
 protocol demonstrable and the default tests deterministic.
 
-## Sessions, Context, and Persistence
+## Sessions, Memory, and Context
 
 The composite identity is `(user_id, session_id)`. Conversation history, Todo
 state, summary, and timestamps are stored in `data/minimal_agent.db` by default.
 Reopening the CLI with the same identity resumes rather than replaces the Session.
+Memory is recalled at the start of every user turn: `AgentService` loads the full
+`SessionState`, then `ContextManager` selects the bounded subset sent to the LLM.
+Recall is session-based rather than keyword-triggered. Checkpoints persist the
+user message, each complete tool-result batch, the final/max-step message, and
+interrupted-turn recovery markers.
 
 Each LLM request contains:
 
@@ -509,7 +636,7 @@ raw history stays durable and tool-call/result pairs remain intact.
 
 ## DeepSeek and Tool Replay
 
-V1 supports only `deepseek-v4-flash`. Thinking is explicitly disabled because
+The configured provider uses `deepseek-v4-flash`. Thinking is explicitly disabled because
 thinking plus tool calls can require reasoning-state replay, while this project
 never persists private chain-of-thought. Only `reasoning_present: bool` may cross
 the adapter boundary; `reasoning_content` is discarded.
@@ -571,10 +698,10 @@ recorded result is `5 passed in 12.52s`; see the
 - **SQLite:** durable transactional persistence without external infrastructure.
 - **Sequential tools:** deterministic state mutation is easier to test and explain.
 - **Maximum steps:** prevents an unbounded LLM/tool cycle.
-- **No automatic retry:** tools may have side effects; V1 has no idempotency layer.
+- **No automatic retry:** tools may have side effects and there is no idempotency layer.
 - **Thinking disabled:** private reasoning state is never persisted or replayed.
 
-## Deliberately Out of Scope for V1
+## Design Boundaries
 
 - Public Internet Search
 - Parallel tools and concurrent same-session writers
@@ -584,8 +711,7 @@ recorded result is `5 passed in 12.52s`; see the
 - Exact provider tokenization
 - Multiple LLM providers or a provider registry
 
-The CLI is the executable V1 demo adapter. FastAPI is a possible future adapter,
-not a missing runtime capability.
+These capabilities are not required to validate the agent loop, session memory, failure recovery, or tool protocol.
 
 ## AI-Assisted Development
 
